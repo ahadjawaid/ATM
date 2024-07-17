@@ -17,7 +17,7 @@
 ## Installation
 
 ```
-git clone --recursive https://github.com/Large-Trajectory-Model/ATM.git
+git clone --recursive https://github.com/ahadjawaid/ATM.git
 
 cd ATM/
 conda env create -f environment.yml
