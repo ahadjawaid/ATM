@@ -270,8 +270,8 @@ def main(root, save, suite, skip_exist):
 
     # load task name embeddings
     task_bert_embs_dict = get_task_bert_embs(root)
-
-    for source_h5 in os.listdir(suite_dir):
+    h5_files = [file_path for file_path in os.listdir(suite_dir) if str(file_path).endswith('.hdf5')]
+    for source_h5 in h5_files:
         source_h5_path = os.path.join(suite_dir, source_h5)
         file_name = source_h5.split('.')[0]
         task_name = get_task_name_from_file_name(file_name)
