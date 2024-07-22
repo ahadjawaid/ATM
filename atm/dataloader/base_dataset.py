@@ -71,7 +71,7 @@ class BaseDataset(Dataset):
                 self.buffer_fns.append(fn)
 
         assert (len(self.buffer_fns) > 0)
-        print(f"found {len(self.buffer_fns)} trajectories in the specified folders: {self.dataset_dir}")
+        # print(f"found {len(self.buffer_fns)} trajectories in the specified folders: {self.dataset_dir}")
 
         self._cache = []
         self._index_to_demo_id, self._demo_id_to_path, self._demo_id_to_start_indices, self._demo_id_to_demo_length \
