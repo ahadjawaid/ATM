@@ -4,6 +4,7 @@ log
 __pycache__/
 wandb
 data
+datasets
 results
 notebooks
 libero/task_embedding_caches/*
