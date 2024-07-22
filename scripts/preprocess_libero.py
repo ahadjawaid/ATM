@@ -249,7 +249,7 @@ def generate_data(source_h5_path, target_dir, track_model, task_emb, skip_exist)
                 continue
 
             try:
-                collect_states_from_demo(h5_file_handle, image_save_dir, demos, demo_k, views, track_model, task_emb, num_points, visualizer, save_vis=(idx%10==0))
+                collect_states_from_demo(h5_file_handle, image_save_dir, demos, demo_k, views, track_model, task_emb, num_points, visualizer, save_vis=False)
                 h5_file_handle.close()
                 # print(f"{save_path} is completed.")
             except Exception as e:
