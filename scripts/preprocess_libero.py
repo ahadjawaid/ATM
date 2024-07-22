@@ -150,7 +150,8 @@ def collect_states_from_demo(h5_file, image_save_dir, demos_group, demo_k, view_
 
     if "extra_states" not in root_grp:
         extra_states_grp = root_grp.create_group("extra_states")
-        for state_key in EXTRA_STATES_KEYS:
+        extra_state_keys = [key for key in list(demos_group[demo_k]['obs']) if all([not view_name in key for view_name in view_names])]
+        for state_key in extra_state_keys:
             extra_states_grp.create_dataset(state_key, data=np.array(demos_group[demo_k]['obs'][state_key]))
 
     if "task_emb_bert" not in root_grp:
@@ -183,6 +184,13 @@ def collect_states_from_demo(h5_file, image_save_dir, demos_group, demo_k, view_
             view_grp.__delitem__("vis")
         view_grp.create_dataset("tracks", data=pred_tracks.cpu().numpy())
         view_grp.create_dataset("vis", data=pred_vis.cpu().numpy())
+
+        intrinsic = demos_group[demo_k]['obs'][f'{view}_intrinsic']
+        camera_position = demos_group[demo_k]['obs'][f'{view}_position']
+        depth = demos_group[demo_k]['obs'][f'{view}_depth']
+        view_grp.create_dataset("intrinsic", data=np.array(intrinsic))
+        view_grp.create_dataset("position", data=np.array(camera_position))
+        view_grp.create_dataset("depth", data=np.array(depth))
 
         # save image pngs
         save_images(rearrange(rgb, "t c h w -> t h w c"), image_save_dir, view)
@@ -243,7 +251,7 @@ def generate_data(source_h5_path, target_dir, track_model, task_emb, skip_exist)
             try:
                 collect_states_from_demo(h5_file_handle, image_save_dir, demos, demo_k, views, track_model, task_emb, num_points, visualizer, save_vis=(idx%10==0))
                 h5_file_handle.close()
-                print(f"{save_path} is completed.")
+                # print(f"{save_path} is completed.")
             except Exception as e:
                 print(f"Exception {e} when processing {save_path}")
                 h5_file_handle.close()

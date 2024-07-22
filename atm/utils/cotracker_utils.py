@@ -122,7 +122,7 @@ class Visualizer:
             save_path = os.path.join(self.save_dir, f"{filename}_pred_track.mp4")
             clip.write_videofile(save_path, codec="libx264", fps=self.fps, logger=None)
 
-            print(f"Video saved to {save_path}")
+            # print(f"Video saved to {save_path}")
 
     def draw_tracks_on_video(
             self,
