@@ -46,6 +46,11 @@ python -m scripts.preprocess_libero --suite libero_10
 python -m scripts.preprocess_libero --suite libero_90
 ```
 
+Then you need to split the datasets
+```
+python3 scripts/split_libero_dataset.py --folder data/atm_libero --train_ratio 0.9
+```
+
 ## Download Checkpoints
 
 To reproduce the experimental results in our paper, we provide the checkpoints trained by us. Please download the zip file from [here](https://drive.google.com/file/d/1lG2hNG_-Etu2TG7XbGxOD40Gorj2DtLw/view?usp=sharing) and put it in the current folder. Then,
