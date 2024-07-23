@@ -82,14 +82,14 @@ python -m scripts.train_libero_policy_bc --suite $SUITE_NAME
 
 Our Track-guided policy can be trained with:
 ```
-python -m scripts.train_libero_policy_atm --suite $SUITE_NAME --tt $PATH_TO_TT
+python -m scripts.train_libero_policy_atm --suite $SUITE_NAME -tt $PATH_TO_TT
 ```
 where $PATH_TO_TT is the path to the folder of Track Transformer pretrained in Stage 1. We have provided the pretrained checkpoints in `results/track_transformers/`. For example,
 ```
-python -m scripts.train_libero_policy_atm --suite libero_spatial --tt results/track_transformer/libero_track_transformer_libero-spatial/
-python -m scripts.train_libero_policy_atm --suite libero_object --tt results/track_transformer/libero_track_transformer_libero-object/
-python -m scripts.train_libero_policy_atm --suite libero_goal --tt results/track_transformer/libero_track_transformer_libero-goal/
-python -m scripts.train_libero_policy_atm --suite libero_10 --tt results/track_transformer/libero_track_transformer_libero-100/
+python -m scripts.train_libero_policy_atm --suite libero_spatial -tt results/track_transformer/libero_track_transformer_libero-spatial/
+python -m scripts.train_libero_policy_atm --suite libero_object -tt results/track_transformer/libero_track_transformer_libero-object/
+python -m scripts.train_libero_policy_atm --suite libero_goal -tt results/track_transformer/libero_track_transformer_libero-goal/
+python -m scripts.train_libero_policy_atm --suite libero_10 -tt results/track_transformer/libero_track_transformer_libero-100/
 ```
 
 ## Evaluation
