@@ -109,6 +109,12 @@ python -m scripts.eval_libero_policy --suite libero_goal --exp-dir results/polic
 python -m scripts.eval_libero_policy --suite libero_10 --exp-dir results/policy/atm-policy_libero-10_demo10
 ```
 
+If you get an error saying `AssertionError: Key task_embeddings not found in config`. To fix this add the following line to `~/.libero/config.yaml` file with the adjusted path for your computer:
+
+```
+task_embeddings: /home/ahad/programming/ATM/libero/task_embedding_caches
+```
+
 ## Citation
 
 If you find our codebase is useful for your research, please cite our paper with this bibtex:
