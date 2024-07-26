@@ -15,6 +15,7 @@ def init_wandb(cfg):
         project=cfg.wandb.project,
         name=cfg.wandb.name,
         group=cfg.wandb.group,
+        mode=cfg.wandb.mode,
     )
     OmegaConf.save(cfg, f"{wandb.run.dir}/config.yaml")
 

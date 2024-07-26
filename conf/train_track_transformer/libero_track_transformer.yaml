@@ -14,6 +14,7 @@ wandb:
   project: atm_libero
   name: ${now:%m%d}_${experiment}_${now:%H%M}_${hydra:job.num}
   group: ${experiment}
+  mode: offline
 
 train_gpus: [0]
 
