@@ -14,7 +14,7 @@ wandb:
   project: atm_libero
   name: ${now:%m%d}_${experiment}_${now:%H%M}_${hydra:job.num}
   group: ${experiment}
-  mode: offline
+  mode: online
 
 train_gpus: [0]
 
@@ -94,3 +94,4 @@ dataset_cfg:
   num_track_ids: ${num_track_ids}
   cache_all: true
   cache_image: false
+  use_points: true

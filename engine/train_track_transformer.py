@@ -38,7 +38,7 @@ def main(cfg: DictConfig):
     val_vis_dataloader = get_dataloader(val_vis_dataset, mode="val", num_workers=1, batch_size=1)
 
     model_cls = eval(cfg.model_name)
-    model = model_cls(**cfg.model_cfg)
+    model = model_cls(use_points=cfg.dataset_cfg.use_points, **cfg.model_cfg)
     optimizer = setup_optimizer(cfg.optimizer_cfg, model)
     scheduler = setup_lr_scheduler(optimizer, cfg.scheduler_cfg)
 

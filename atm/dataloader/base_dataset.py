@@ -27,6 +27,7 @@ class BaseDataset(Dataset):
                  augment_track=True,
                  views=None,
                  extra_state_keys=None,
+                 use_points=False,
     ):
         super().__init__()
         self.dataset_dir = dataset_dir
@@ -43,6 +44,7 @@ class BaseDataset(Dataset):
         self.extra_state_keys = extra_state_keys
         self.cache_all = cache_all
         self.cache_image = cache_image
+        self.use_points = use_points
         if not cache_all:
             assert not cache_image, "cache_image is only supported when cache_all is True."
 
@@ -118,22 +120,25 @@ class BaseDataset(Dataset):
             vids = demo["root"][v]['video'][0]  # t, c, h, w
             tracks = demo["root"][v]['tracks'][0]  # t, num_tracks, 2
             vis = demo["root"][v]['vis'][0]  # t, num_tracks
-
+            depth = demo["root"][v]['depth'].transpose(0, 3, 1, 2) # t, c, h, w
+            intrinsic = demo["root"][v]['intrinsic']
             t, c, h, w = vids.shape
-
-            last_frame, last_track, last_vis = vids[-1:], tracks[-1:], vis[-1:]
+            last_frame, last_track, last_vis, last_depth = vids[-1:], tracks[-1:], vis[-1:], depth[-1:]
             vids = np.concatenate([vids, np.repeat(last_frame, pad_length, axis=0)], axis=0)
             tracks = np.concatenate([tracks, np.repeat(last_track, pad_length, axis=0)], axis=0)
             vis = np.concatenate([vis, np.repeat(last_vis, pad_length, axis=0)], axis=0)
+            depth = np.concatenate([depth, np.repeat(last_depth, pad_length, axis=0)], axis=0)
+            vids, tracks, vis, depth = map(torch.Tensor, (vids, tracks, vis, depth))
 
-            vids, tracks, vis = torch.Tensor(vids), torch.Tensor(tracks), torch.Tensor(vis)
+            if self.use_points:
+                points = convert_tracks_to_points(tracks, depth, intrinsic)
 
             # resize the images to the desired size.
             if h != self.img_size[0] or w != self.img_size[1]:
                 vids = F.interpolate(vids, size=self.img_size, mode="bilinear", align_corners=False)
 
             demo["root"][v]['video'] = vids
-            demo["root"][v]['tracks'] = tracks
+            demo["root"][v]['tracks'] = tracks if not self.use_points else points
             demo["root"][v]['vis'] = vis
 
         actions = demo["root"]["actions"]
@@ -220,3 +225,25 @@ class BaseDataset(Dataset):
 
     def __getitem__(self, index):
         raise NotImplementedError
+
+def convert_tracks_to_points(tracks, depth, intrinsic):
+    n_time_steps, _, height, width = depth.shape
+    unnormalize_scalar = torch.tensor([[height, width],]).unsqueeze(0)
+    track_coordinates = (tracks * unnormalize_scalar).round().long()
+
+    px, py = intrinsic[0, 2], intrinsic[1, 2]
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+
+    stacked_p = torch.tensor([[px, py],]).unsqueeze(0)
+    stacked_f = torch.tensor([[fx, fy],]).unsqueeze(0)
+    
+    clamped_coordinates = torch.ones_like(track_coordinates)
+    clamped_coordinates[..., 0] = track_coordinates[..., 0].clamp(0, height-1)
+    clamped_coordinates[..., 1] = track_coordinates[..., 1].clamp(0, width-1)
+    
+    time_step_indicies = torch.arange(n_time_steps).unsqueeze(1)
+    depth_values = depth[time_step_indicies, 0, clamped_coordinates[..., 0], clamped_coordinates[..., 1]].unsqueeze(-1)
+
+    points = ((track_coordinates - stacked_p) / stacked_f) * depth_values
+    points = torch.concatenate([points, depth_values], axis=-1)
+    return points
