@@ -18,6 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--suite", default="libero_goal", choices=["libero_spatial", "libero_object", "libero_goal", "libero_10"], 
                     help="The name of the desired suite, where libero_10 is the alias of libero_long.")
 parser.add_argument("-tt", "--track-transformer", default=None, help="Then path to the trained track transformer.")
+parser.add_argument('--n_seeds', default=1, help="The number of seeds you want to train the policy with.")
 args = parser.parse_args()
 
 # training configs
@@ -37,7 +38,7 @@ val_path_list = [f"{root_dir}/{suite_name}/{task_dir}/val" for task_dir in task_
 
 track_fn = args.track_transformer or DEFAULT_TRACK_TRANSFORMERS[suite_name]
 
-for seed in range(3):
+for seed in range(args.n_seeds):
     commond = (f'python -m engine.train_bc --config-name={CONFIG_NAME} train_gpus="{train_gpu_ids}" '
                 f'experiment=atm-policy_{suite_name.replace("_", "-")}_demo{NUM_DEMOS} '
                 f'train_dataset="{train_path_list}" val_dataset="{val_path_list}" '
