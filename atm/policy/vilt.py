@@ -16,6 +16,7 @@ from atm.policy.vilt_modules.language_modules import *
 from atm.policy.vilt_modules.extra_state_modules import ExtraModalityTokens
 from atm.policy.vilt_modules.policy_head import *
 from atm.utils.flow_utils import ImageUnNormalize, sample_double_grid, tracks_to_video
+from atm.dataloader.base_dataset import convert_tracks_to_points
 
 ###############################################################################
 #
@@ -103,6 +104,7 @@ class BCViLTPolicy(nn.Module):
         use_zero_track: whether to zero out the tracks (ie use only the image)
         """
         track_cfg = OmegaConf.load(f"{track_fn}/config.yaml")
+        self.use_points = track_cfg.model_cfg.use_points
         self.use_zero_track = use_zero_track
 
         track_cfg.model_cfg.load_path = f"{track_fn}/model_best.ckpt"
@@ -117,12 +119,12 @@ class BCViLTPolicy(nn.Module):
         self.num_track_ts = self.track.num_track_ts
         self.policy_track_patch_size = self.track.track_patch_size if policy_track_patch_size is None else policy_track_patch_size
 
-
+        self.track_channels = 2 + int(self.use_points)
         self.track_proj_encoder = TrackPatchEmbed(
             num_track_ts=self.policy_num_track_ts,
             num_track_ids=self.num_track_ids,
             patch_size=self.policy_track_patch_size,
-            in_dim=2 + self.num_views,  # X, Y, one-hot view embedding
+            in_dim=self.track_channels + self.num_views,  # X, Y, one-hot view embedding
             embed_dim=self.spatial_embed_size)
 
         self.track_id_embed_dim = 16
@@ -201,7 +203,7 @@ class BCViLTPolicy(nn.Module):
 
     def _setup_policy_head(self, network_name, **policy_head_kwargs):
         policy_head_kwargs["input_size"] \
-            = self.temporal_embed_size + self.num_views * self.policy_num_track_ts * self.policy_num_track_ids * 2
+            = self.temporal_embed_size + self.num_views * self.policy_num_track_ts * self.policy_num_track_ids * self.track_channels
 
         action_shape = policy_head_kwargs["output_size"]
         self.act_shape = action_shape
@@ -237,7 +239,7 @@ class BCViLTPolicy(nn.Module):
         tr_view = rearrange(tr_view, "(b t tl n) v c -> b v t tl n c", b=b, v=v, t=t, tl=tl, n=n, c=d + v)
         return tr_view
 
-    def track_encode(self, track_obs, task_emb):
+    def track_encode(self, track_obs, task_emb, depth, intrinsics):
         """
         Args:
             track_obs: b v t tt_fs c h w
@@ -246,16 +248,30 @@ class BCViLTPolicy(nn.Module):
         """
         assert self.num_track_ids == 32
         b, v, t, *_ = track_obs.shape
+        curr_depth = depth[:,:,:, 0,...].unsqueeze(3)
 
         if self.use_zero_track:
             recon_tr = torch.zeros((b, v, t, self.num_track_ts, self.num_track_ids, 2), device=track_obs.device, dtype=track_obs.dtype)
         else:
             track_obs_to_pred = rearrange(track_obs, "b v t fs c h w -> (b v t) fs c h w")
-
             grid_points = sample_double_grid(4, device=track_obs.device, dtype=track_obs.dtype)
             grid_sampled_track = repeat(grid_points, "n d -> b v t tl n d", b=b, v=v, t=t, tl=self.num_track_ts)
+            if self.use_points:
+                points = []
+                for view_i in range(v):
+                    curr_sample_track = grid_sampled_track[:, view_i, ...]
+                    curr_sample_depth = curr_depth[:, view_i, ...]
+                    intrinsic = intrinsics[0, view_i]
+                    b, t, tl, n, d = curr_sample_track.shape
+                    expanded_depth = repeat(curr_sample_depth.squeeze(2), 'a b c d e -> a b tl c d e', tl=tl)
+                    rearranged_track = rearrange(curr_sample_track, 'b t tl n d -> (b t tl) n d')
+                    rearranged_depth = rearrange(expanded_depth, 'a b c d h w -> (a b c) d h w')
+                    point = convert_tracks_to_points(rearranged_track, rearranged_depth, intrinsic)
+                    point = rearrange(point, '(b t tl) n d -> b t tl n d', b=b, t=t, tl=tl)
+                    points.append(point)
+                points = torch.stack(points, dim=1)
+                grid_sampled_track = points
             grid_sampled_track = rearrange(grid_sampled_track, "b v t tl n d -> (b v t) tl n d")
-
             expand_task_emb = repeat(task_emb, "b e -> b v t e", b=b, v=v, t=t)
             expand_task_emb = rearrange(expand_task_emb, "b v t e -> (b v t) e")
             with torch.no_grad():
@@ -273,7 +289,7 @@ class BCViLTPolicy(nn.Module):
 
         return tr, _recon_tr
 
-    def spatial_encode(self, obs, track_obs, task_emb, extra_states, return_recon=False):
+    def spatial_encode(self, obs, track_obs, task_emb, extra_states, depth, intrinsics, return_recon=False):
         """
         Encode the images separately in the videos along the spatial axis.
         Args:
@@ -304,7 +320,7 @@ class BCViLTPolicy(nn.Module):
         text_encoded = text_encoded.view(B, 1, 1, -1).expand(-1, T, -1, -1)  # (b, t, 1, c)
 
         # 3. encode track
-        track_encoded, _recon_track = self.track_encode(track_obs, task_emb)  # track_encoded: ((b t n), 2*patch_num, c)  _recon_track: (b, v, track_len, n, 2)
+        track_encoded, _recon_track = self.track_encode(track_obs, task_emb, depth, intrinsics)  # track_encoded: ((b t n), 2*patch_num, c)  _recon_track: (b, v, track_len, n, 2)
         # patch position embedding
         tr_feat, tr_id_emb = track_encoded[:, :, :-self.track_id_embed_dim], track_encoded[:, :, -self.track_id_embed_dim:]
         tr_feat += self.track_patch_pos_embed  # ((b t n), 2*patch_num, c)
@@ -371,7 +387,7 @@ class BCViLTPolicy(nn.Module):
         x = x.reshape(*sh)  # (b, t, num_modality, c)
         return x[:, :, 0]  # (b, t, c)
 
-    def forward(self, obs, track_obs, track, task_emb, extra_states):
+    def forward(self, obs, track_obs, track, task_emb, extra_states, depth, intrinsics):
         """
         Return feature and info.
         Args:
@@ -380,7 +396,7 @@ class BCViLTPolicy(nn.Module):
             track: b v t track_len n 2, not used for training, only preserved for unified interface
             extra_states: {k: b t e}
         """
-        x, recon_track = self.spatial_encode(obs, track_obs, task_emb, extra_states, return_recon=True)  # x: (b, t, 2+num_extra, c), recon_track: (b, v, t, tl, n, 2)
+        x, recon_track = self.spatial_encode(obs, track_obs, task_emb, extra_states, depth, intrinsics, return_recon=True)  # x: (b, t, 2+num_extra, c), recon_track: (b, v, t, tl, n, 2)
         x = self.temporal_encode(x)  # (b, t, c)
 
         recon_track = rearrange(recon_track, "b v t tl n d -> b t (v tl n d)")
@@ -389,7 +405,7 @@ class BCViLTPolicy(nn.Module):
         dist = self.policy_head(x)  # only use the current timestep feature to predict action
         return dist
 
-    def forward_loss(self, obs, track_obs, track, task_emb, extra_states, action):
+    def forward_loss(self, obs, track_obs, track, task_emb, extra_states, action, depth, intrinsics):
         """
         Args:
             obs: b v t c h w
@@ -399,7 +415,7 @@ class BCViLTPolicy(nn.Module):
             action: b t act_dim
         """
         obs, track, action = self.preprocess(obs, track, action)
-        dist = self.forward(obs, track_obs, track, task_emb, extra_states)
+        dist = self.forward(obs, track_obs, track, task_emb, extra_states, depth, intrinsics)
         loss = self.policy_head.loss_fn(dist, action, reduction="mean")
 
         ret_dict = {

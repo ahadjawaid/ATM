@@ -29,7 +29,7 @@ def main(cfg: DictConfig):
     work_dir = HydraConfig.get().runtime.output_dir
     setup(cfg)
     OmegaConf.save(config=cfg, f=os.path.join(work_dir, "config.yaml"))
-
+    use_points = cfg.dataset_cfg.use_points
     train_dataset = BCDataset(dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
     train_loader = get_dataloader(train_dataset,
                                       mode="train",
@@ -126,7 +126,7 @@ def main(cfg: DictConfig):
                                                 f"{mode}/rollout_track": wandb_vid_rollout},
                                                 step=epoch)
 
-            if fabric.is_global_zero and hasattr(model, "forward_vis"):
+            if not use_points and fabric.is_global_zero and hasattr(model, "forward_vis"):
                 vis_and_log(model, train_vis_dataloader, mode="train")
                 vis_and_log(model, val_vis_dataloader, mode="val")
 
@@ -166,12 +166,12 @@ def run_one_epoch(fabric,
 
     model.train()
     i = 0
-    for obs, track_obs, track, task_emb, action, extra_states in tqdm(dataloader):
+    for obs, track_obs, track, task_emb, action, extra_states, depth, intrinsics in tqdm(dataloader):
         if mix_precision:
-            obs, track_obs, track, task_emb, action = obs.bfloat16(), track_obs.bfloat16(), track.bfloat16(), task_emb.bfloat16(), action.bfloat16()
+            obs, track_obs, track, task_emb, action, depth = obs.bfloat16(), track_obs.bfloat16(), track.bfloat16(), task_emb.bfloat16(), action.bfloat16(), depth.bfloat16()
             extra_states = {k: v.bfloat16() for k, v in extra_states.items()}
 
-        loss, ret_dict = model.forward_loss(obs, track_obs, track, task_emb, extra_states, action)
+        loss, ret_dict = model.forward_loss(obs, track_obs, track, task_emb, extra_states, action, depth, intrinsics)
         optimizer.zero_grad()
         fabric.backward(loss)
 
@@ -203,14 +203,14 @@ def evaluate(model, dataloader, mix_precision=False, tag="val"):
     model.eval()
 
     i = 0
-    for obs, track_obs, track, task_emb, action, extra_states in tqdm(dataloader):
-        obs, track_obs, track, task_emb, action = obs.cuda(), track_obs.cuda(), track.cuda(), task_emb.cuda(), action.cuda()
+    for obs, track_obs, track, task_emb, action, extra_states, depth, intrinsics in tqdm(dataloader):
+        obs, track_obs, track, task_emb, action, depth, intrinsics = obs.cuda(), track_obs.cuda(), track.cuda(), task_emb.cuda(), action.cuda(), depth.cuda(), intrinsics.cuda()
         extra_states = {k: v.cuda() for k, v in extra_states.items()}
         if mix_precision:
-            obs, track_obs, track, task_emb, action = obs.bfloat16(), track_obs.bfloat16(), track.bfloat16(), task_emb.bfloat16(), action.bfloat16()
+            obs, track_obs, track, task_emb, action, depth, intrinsics = obs.bfloat16(), track_obs.bfloat16(), track.bfloat16(), task_emb.bfloat16(), action.bfloat16(), depth.bfloat16(), intrinsics.bfloat16()
             extra_states = {k: v.bfloat16() for k, v in extra_states.items()}
 
-        _, ret_dict = model.forward_loss(obs, track_obs, track, task_emb, extra_states, action)
+        _, ret_dict = model.forward_loss(obs, track_obs, track, task_emb, extra_states, action, depth, intrinsics)
 
         i += 1
 

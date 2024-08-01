@@ -140,6 +140,8 @@ class BaseDataset(Dataset):
             demo["root"][v]['video'] = vids
             demo["root"][v]['tracks'] = tracks if not self.use_points else points
             demo["root"][v]['vis'] = vis
+            demo["root"][v]['depth'] = depth
+            demo['root'][v]['intrinsic'] = intrinsic
 
         actions = demo["root"]["actions"]
         if actions.ndim == 3:
@@ -227,23 +229,42 @@ class BaseDataset(Dataset):
         raise NotImplementedError
 
 def convert_tracks_to_points(tracks, depth, intrinsic):
-    n_time_steps, _, height, width = depth.shape
-    unnormalize_scalar = torch.tensor([[height, width],]).unsqueeze(0)
+    *_, n_time_steps, _, height, width = depth.shape
+    device = tracks.device
+    unnormalize_scalar = torch.tensor([[height, width],], dtype=torch.float32, device=device).unsqueeze(0)
     track_coordinates = (tracks * unnormalize_scalar).round().long()
 
-    px, py = intrinsic[0, 2], intrinsic[1, 2]
-    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+    px, py = float(intrinsic[0, 2]), float(intrinsic[1, 2])
+    fx, fy = float(intrinsic[0, 0]), float(intrinsic[1, 1])
 
-    stacked_p = torch.tensor([[px, py],]).unsqueeze(0)
-    stacked_f = torch.tensor([[fx, fy],]).unsqueeze(0)
+    stacked_p = torch.tensor([[px, py],], dtype=torch.float32, device=device).unsqueeze(0)
+    stacked_f = torch.tensor([[fx, fy],], dtype=torch.float32, device=device).unsqueeze(0)
     
-    clamped_coordinates = torch.ones_like(track_coordinates)
+    clamped_coordinates = torch.ones_like(track_coordinates, device=device)
     clamped_coordinates[..., 0] = track_coordinates[..., 0].clamp(0, height-1)
     clamped_coordinates[..., 1] = track_coordinates[..., 1].clamp(0, width-1)
     
-    time_step_indicies = torch.arange(n_time_steps).unsqueeze(1)
+    time_step_indicies = torch.arange(n_time_steps, device=device).unsqueeze(1)
     depth_values = depth[time_step_indicies, 0, clamped_coordinates[..., 0], clamped_coordinates[..., 1]].unsqueeze(-1)
 
     points = ((track_coordinates - stacked_p) / stacked_f) * depth_values
     points = torch.concatenate([points, depth_values], axis=-1)
     return points
+
+def convert_points_to_tracks(points, intrinsic, shape):
+    device = points.device
+    px, py = intrinsic[0, 2], intrinsic[1, 2]
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+
+    stacked_p = torch.tensor([[px, py],], dtype=torch.float32, device=device).unsqueeze(0)
+    stacked_f = torch.tensor([[fx, fy],], dtype=torch.float32, device=device).unsqueeze(0)
+
+    depth_values = points[..., -1].unsqueeze(-1)
+    point_coordinates = points[..., 0:-1]
+    track_coordinates = (((point_coordinates / depth_values) * stacked_f) + stacked_p).long()
+
+    height, width = shape
+    normalize_scalar = torch.tensor([[height, width],], dtype=torch.float32, device=device).unsqueeze(0)
+    tracks = track_coordinates / normalize_scalar
+
+    return tracks

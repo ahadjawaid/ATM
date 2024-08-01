@@ -127,3 +127,4 @@ dataset_cfg:
   extra_state_keys: ${extra_state_keys}
   cache_all: true
   cache_image: true
+  use_points: true
