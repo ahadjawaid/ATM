@@ -16,6 +16,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from atm.dataloader import BCDataset, get_dataloader
+from atm.dataloader.cache_dataset import CachedAugmentedDataset
 from atm.policy import *
 from atm.utils.train_utils import setup_optimizer, setup_lr_scheduler, init_wandb
 from atm.utils.log_utils import MetricLogger, BestAvgLoss
@@ -29,29 +30,24 @@ def main(cfg: DictConfig):
     work_dir = HydraConfig.get().runtime.output_dir
     setup(cfg)
     OmegaConf.save(config=cfg, f=os.path.join(work_dir, "config.yaml"))
-    use_points = cfg.dataset_cfg.use_points
-    train_dataset = BCDataset(dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
-    train_loader = get_dataloader(train_dataset,
-                                      mode="train",
-                                      num_workers=cfg.num_workers,
-                                      batch_size=cfg.batch_size)
+    use_points = cfg.use_points
 
-    train_vis_dataset = BCDataset(dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
-    train_vis_dataloader = get_dataloader(train_vis_dataset,
-                                              mode="train",
-                                              num_workers=1,
-                                              batch_size=1)
+    fabric = Fabric(accelerator="cuda", devices=list(cfg.train_gpus), precision="bf16-mixed" if cfg.mix_precision else None, strategy="deepspeed")
+    fabric.launch()
+
+    None if (cfg.dry or not fabric.is_global_zero) else init_wandb(cfg)
+
+    train_dataset = CachedAugmentedDataset(dataset='bc', dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
+    train_loader = get_dataloader(train_dataset, mode="train", num_workers=cfg.num_workers, batch_size=cfg.batch_size)
+
+    # train_vis_dataset = BCDataset(dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=0.)
+    # train_vis_dataloader = get_dataloader(train_vis_dataset, mode="train", num_workers=1, batch_size=1)
 
     val_dataset = BCDataset(dataset_dir=cfg.val_dataset, num_demos=cfg.val_num_demos, **cfg.dataset_cfg, aug_prob=0.)
     val_loader = get_dataloader(val_dataset, mode="val", num_workers=cfg.num_workers, batch_size=cfg.batch_size)
 
     val_vis_dataset = BCDataset(dataset_dir=cfg.val_dataset, num_demos=cfg.val_num_demos, vis=True, **cfg.dataset_cfg, aug_prob=0.)
     val_vis_dataloader = get_dataloader(val_vis_dataset, mode="train", num_workers=1, batch_size=1)
-
-    fabric = Fabric(accelerator="cuda", devices=list(cfg.train_gpus), precision="bf16-mixed" if cfg.mix_precision else None, strategy="deepspeed")
-    fabric.launch()
-
-    None if (cfg.dry or not fabric.is_global_zero) else init_wandb(cfg)
 
     model_cls = eval(cfg.model_name)
     model = model_cls(**cfg.model_cfg)
@@ -127,8 +123,9 @@ def main(cfg: DictConfig):
                                                 step=epoch)
 
             if not use_points and fabric.is_global_zero and hasattr(model, "forward_vis"):
-                vis_and_log(model, train_vis_dataloader, mode="train")
-                vis_and_log(model, val_vis_dataloader, mode="val")
+                # vis_and_log(model, train_vis_dataloader, mode="train")
+                # vis_and_log(model, val_vis_dataloader, mode="val")
+                pass
 
             gathered_results = [{} for _ in range(fabric.world_size)]
             results = rollout(rollout_env, model, 20 // cfg.env_cfg.vec_env_num, horizon=rollout_horizon)

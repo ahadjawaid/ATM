@@ -16,7 +16,10 @@ from atm.policy.vilt_modules.language_modules import *
 from atm.policy.vilt_modules.extra_state_modules import ExtraModalityTokens
 from atm.policy.vilt_modules.policy_head import *
 from atm.utils.flow_utils import ImageUnNormalize, sample_double_grid, tracks_to_video
-from atm.dataloader.base_dataset import convert_tracks_to_points
+from atm.dataloader.base_dataset import convert_tracks_to_points, convert_points_to_tracks
+from atm.utils.visualizer import plot_2d_tracks, get_colored_point_cloud_with_tracks, Visualizer
+import matplotlib.pyplot as plt
+
 
 ###############################################################################
 #
@@ -274,8 +277,9 @@ class BCViLTPolicy(nn.Module):
             grid_sampled_track = rearrange(grid_sampled_track, "b v t tl n d -> (b v t) tl n d")
             expand_task_emb = repeat(task_emb, "b e -> b v t e", b=b, v=v, t=t)
             expand_task_emb = rearrange(expand_task_emb, "b v t e -> (b v t) e")
+            curr_depth_in = rearrange(curr_depth, "b v t fs c h w -> (b v t) fs c h w")
             with torch.no_grad():
-                pred_tr, _ = self.track.reconstruct(track_obs_to_pred, grid_sampled_track, expand_task_emb, p_img=0)  # (b v t) tl n d
+                pred_tr, _ = self.track.reconstruct(track_obs_to_pred, grid_sampled_track, expand_task_emb, depth=curr_depth_in, p_img=0)  # (b v t) tl n d
                 recon_tr = rearrange(pred_tr, "(b v t) tl n d -> b v t tl n d", b=b, v=v, t=t)
 
         recon_tr = recon_tr[:, :, :, :self.policy_num_track_ts, :, :]  # truncate the track to a shorter one
@@ -431,7 +435,7 @@ class BCViLTPolicy(nn.Module):
         ret_dict["loss"] = ret_dict["bc_loss"]
         return loss.sum(), ret_dict
 
-    def forward_vis(self, obs, track_obs, track, task_emb, extra_states, action):
+    def forward_vis(self, obs, track_obs, track, task_emb, extra_states, action, depth=None):
         """
         Args:
             obs: b v t c h w
@@ -464,7 +468,7 @@ class BCViLTPolicy(nn.Module):
             gt_track_vid = tracks_to_video(gt_track, img_size=h)
             combined_gt_track_vid = (track_obs[:1, view, 0, :, ...] * .25 + gt_track_vid * .75).cpu().numpy().astype(np.uint8)
 
-            _, ret_dict = self.track.forward_vis(track_obs[:1, view, 0, :, ...], grid_track[:1, view], task_emb[:1], p_img=0)
+            _, ret_dict = self.track.forward_vis(track_obs[:1, view, 0, :, ...], grid_track[:1, view], task_emb[:1], depth[:1, view], p_img=0)
             ret_dict["combined_track_vid"] = np.concatenate([combined_gt_track_vid, ret_dict["combined_track_vid"]], axis=-1)
 
             all_ret_dict = {k: all_ret_dict.get(k, []) + [v] for k, v in ret_dict.items()}
@@ -476,7 +480,7 @@ class BCViLTPolicy(nn.Module):
                 all_ret_dict[k] = np.mean(v)
         return None, all_ret_dict
 
-    def act(self, obs, task_emb, extra_states):
+    def act(self, obs, depth, intrinsic, task_emb, extra_states):
         """
         Args:
             obs: (b, v, h, w, c)
@@ -488,11 +492,14 @@ class BCViLTPolicy(nn.Module):
 
         # expand time dimenstion
         obs = rearrange(obs, "b v h w c -> b v 1 c h w").copy()
+        depth = rearrange(depth, "b v h w c -> b v 1 c h w").copy()
         extra_states = {k: rearrange(v, "b e -> b 1 e") for k, v in extra_states.items()}
 
         dtype = next(self.parameters()).dtype
         device = next(self.parameters()).device
         obs = torch.Tensor(obs).to(device=device, dtype=dtype)
+        depth = torch.Tensor(depth).to(device=device, dtype=dtype)
+        intrinsic = torch.Tensor(intrinsic).to(device=device, dtype=dtype)
         task_emb = torch.Tensor(task_emb).to(device=device, dtype=dtype)
         extra_states = {k: torch.Tensor(v).to(device=device, dtype=dtype) for k, v in extra_states.items()}
 
@@ -506,11 +513,12 @@ class BCViLTPolicy(nn.Module):
         self.track_obs_queue.append(obs.clone())
         track_obs = torch.cat(list(self.track_obs_queue), dim=2)  # b v fs c h w
         track_obs = rearrange(track_obs, "b v fs c h w -> b v 1 fs c h w")
+        depth = depth.unsqueeze(2)
 
         obs = self._preprocess_rgb(obs)
 
         with torch.no_grad():
-            x, rec_tracks = self.spatial_encode(obs, track_obs, task_emb=task_emb, extra_states=extra_states, return_recon=True)  # x: (b, 1, 4, c), recon_track: (b, v, 1, tl, n, 2)
+            x, rec_tracks = self.spatial_encode(obs, track_obs, depth=depth, intrinsics=intrinsic, task_emb=task_emb, extra_states=extra_states, return_recon=True)  # x: (b, 1, 4, c), recon_track: (b, v, 1, tl, n, 2)
             self.latent_queue.append(x)
             x = torch.cat(list(self.latent_queue), dim=1)  # (b, t, 4, c)
             x = self.temporal_encode(x)  # (b, t, c)

@@ -2,14 +2,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from torchvision import transforms
 from einops import rearrange
 import os
 from glob import glob
 from natsort import natsorted
 import h5py
+from atm.dataloader.utils import load_rgb
 
-from atm.dataloader.utils import load_rgb, ImgTrackColorJitter, ImgViewDiffTranslationAug
 
 
 class BaseDataset(Dataset):
@@ -80,11 +79,6 @@ class BaseDataset(Dataset):
             = {}, {}, {}, {}
         self.load_demo_info()
 
-        self.augmentor = transforms.Compose([
-            ImgTrackColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            ImgViewDiffTranslationAug(input_shape=img_size, translation=8, augment_track=self.augment_track),
-        ])
-
     def load_demo_info(self):
         start_idx = 0
         for demo_idx, fn in enumerate(self.buffer_fns):
@@ -120,7 +114,7 @@ class BaseDataset(Dataset):
             vids = demo["root"][v]['video'][0]  # t, c, h, w
             tracks = demo["root"][v]['tracks'][0]  # t, num_tracks, 2
             vis = demo["root"][v]['vis'][0]  # t, num_tracks
-            depth = demo["root"][v]['depth'].transpose(0, 3, 1, 2) # t, c, h, w
+            depth = rearrange(demo["root"][v]['depth'], 't h w c -> t c h w')
             intrinsic = demo["root"][v]['intrinsic']
             t, c, h, w = vids.shape
             last_frame, last_track, last_vis, last_depth = vids[-1:], tracks[-1:], vis[-1:], depth[-1:]
@@ -130,15 +124,15 @@ class BaseDataset(Dataset):
             depth = np.concatenate([depth, np.repeat(last_depth, pad_length, axis=0)], axis=0)
             vids, tracks, vis, depth = map(torch.Tensor, (vids, tracks, vis, depth))
 
-            if self.use_points:
-                points = convert_tracks_to_points(tracks, depth, intrinsic)
+            depth = depth.flip(len(depth.shape) - 2)
+            tracks = tracks.flip(-1)
 
             # resize the images to the desired size.
             if h != self.img_size[0] or w != self.img_size[1]:
                 vids = F.interpolate(vids, size=self.img_size, mode="bilinear", align_corners=False)
 
             demo["root"][v]['video'] = vids
-            demo["root"][v]['tracks'] = tracks if not self.use_points else points
+            demo["root"][v]['tracks'] = tracks
             demo["root"][v]['vis'] = vis
             demo["root"][v]['depth'] = depth
             demo['root'][v]['intrinsic'] = intrinsic
@@ -228,11 +222,11 @@ class BaseDataset(Dataset):
     def __getitem__(self, index):
         raise NotImplementedError
 
-def convert_tracks_to_points(tracks, depth, intrinsic):
+def convert_tracks_to_points(tracks, depth, intrinsic, depth_scalar=1):
     *_, n_time_steps, _, height, width = depth.shape
     device = tracks.device
     unnormalize_scalar = torch.tensor([[height, width],], dtype=torch.float32, device=device).unsqueeze(0)
-    track_coordinates = (tracks * unnormalize_scalar).round().long()
+    track_coordinates = (tracks * unnormalize_scalar).long()
 
     px, py = float(intrinsic[0, 2]), float(intrinsic[1, 2])
     fx, fy = float(intrinsic[0, 0]), float(intrinsic[1, 1])
@@ -246,12 +240,14 @@ def convert_tracks_to_points(tracks, depth, intrinsic):
     
     time_step_indicies = torch.arange(n_time_steps, device=device).unsqueeze(1)
     depth_values = depth[time_step_indicies, 0, clamped_coordinates[..., 0], clamped_coordinates[..., 1]].unsqueeze(-1)
-
-    points = ((track_coordinates - stacked_p) / stacked_f) * depth_values
+    depth_values = depth_values / depth_scalar
+    
+    points = (((clamped_coordinates - stacked_p) * depth_values) / stacked_f)
+    points = torch.flip(points, dims=[-1]) # Because visualization needs it flipped
     points = torch.concatenate([points, depth_values], axis=-1)
     return points
 
-def convert_points_to_tracks(points, intrinsic, shape):
+def convert_points_to_tracks(points, intrinsic, shape, depth_scalar=1):
     device = points.device
     px, py = intrinsic[0, 2], intrinsic[1, 2]
     fx, fy = intrinsic[0, 0], intrinsic[1, 1]
@@ -259,9 +255,12 @@ def convert_points_to_tracks(points, intrinsic, shape):
     stacked_p = torch.tensor([[px, py],], dtype=torch.float32, device=device).unsqueeze(0)
     stacked_f = torch.tensor([[fx, fy],], dtype=torch.float32, device=device).unsqueeze(0)
 
-    depth_values = points[..., -1].unsqueeze(-1)
+    depth_values = points[..., -1].unsqueeze(-1) 
+    depth_values = depth_values * depth_scalar
+
     point_coordinates = points[..., 0:-1]
-    track_coordinates = (((point_coordinates / depth_values) * stacked_f) + stacked_p).long()
+    point_coordinates = torch.flip(point_coordinates, dims=[-1])
+    track_coordinates = (((point_coordinates * stacked_f) / depth_values) + stacked_p).long()
 
     height, width = shape
     normalize_scalar = torch.tensor([[height, width],], dtype=torch.float32, device=device).unsqueeze(0)

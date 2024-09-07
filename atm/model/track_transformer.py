@@ -11,6 +11,9 @@ from atm.utils.pos_embed_utils import get_1d_sincos_pos_embed, get_2d_sincos_pos
 from atm.policy.vilt_modules.language_modules import *
 from .track_patch_embed import TrackPatchEmbed
 from .transformer import Transformer
+from atm.dataloader.base_dataset import convert_points_to_tracks
+from atm.utils.visualizer import Visualizer, get_colored_point_cloud_with_tracks
+from atm.utils.train_utils import to_cpu
 
 class TrackTransformer(nn.Module):
     """
@@ -30,10 +33,12 @@ class TrackTransformer(nn.Module):
                  vid_cfg,
                  language_encoder_cfg,
                  load_path=None,
-                 use_points: bool = False):
+                 use_points: bool = False,
+                 depth_dim: bool = False):
         super().__init__()
         self.dim = dim = transformer_cfg.dim
         self.use_points = use_points
+        self.depth_dim = depth_dim
         self.transformer = self._init_transformer(**transformer_cfg)
         self.track_proj_encoder, self.track_decoder = self._init_track_modules(**track_cfg, dim=dim)
         self.img_proj_encoder, self.img_decoder = self._init_video_modules(**vid_cfg, dim=dim)
@@ -84,14 +89,16 @@ class TrackTransformer(nn.Module):
         self.img_size = img_size
         self.frame_stack = frame_stack
         self.patch_size = patch_size
+
+        in_channels = (3 + int(self.depth_dim)) * self.frame_stack
         self.img_proj_encoder = PatchEmbed(
             img_size=img_size,
             patch_size=patch_size,
-            in_chans=3 * self.frame_stack,
+            in_chans=in_channels,
             embed_dim=dim,
         )
         self.num_img_patches = self.img_proj_encoder.num_patches
-        self.img_decoder = nn.Linear(dim, 3 * self.frame_stack * patch_size ** 2, bias=True)
+        self.img_decoder = nn.Linear(dim, in_channels * patch_size ** 2, bias=True)
 
         return self.img_proj_encoder, self.img_decoder
 
@@ -144,10 +151,12 @@ class TrackTransformer(nn.Module):
         track = rearrange(track, 'b t n d -> b (t n) d')
         return track
 
-    def _encode_video(self, vid, p):
+    def _encode_video(self, vid, p, depth=None):
         """
         vid: (b, t, c, h, w)
+        depth: (b, t, 1, h, w)
         """
+        vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
         vid = rearrange(vid, "b t c h w -> b (t c) h w")
         patches = self.img_proj_encoder(vid)  # b, n, d
         patches = self._mask_patches(patches, p=p)
@@ -173,7 +182,7 @@ class TrackTransformer(nn.Module):
         mask_track[:, 1:] = track[:, [0]]
         return mask_track
 
-    def forward(self, vid, track, task_emb, p_img):
+    def forward(self, vid, track, task_emb, p_img, depth=None):
         """
         track: (b, tl, n, 2 or 3), which means current time step t0 -> t0 + tl
         vid: (b, t, c, h, w), which means the past time step t0 - t -> t0
@@ -181,7 +190,7 @@ class TrackTransformer(nn.Module):
         """
         assert torch.max(vid) <=1.
         B, T, _, _ = track.shape
-        patches = self._encode_video(vid, p_img)  # (b, n_image, d)
+        patches = self._encode_video(vid, p_img, depth)  # (b, n_image, d)
         enc_track = self._encode_track(track)
 
         text_encoded = self.language_encoder(task_emb)  # (b, c)
@@ -198,7 +207,7 @@ class TrackTransformer(nn.Module):
 
         return rec_track, rec_patches
 
-    def reconstruct(self, vid, track, task_emb, p_img):
+    def reconstruct(self, vid, track, task_emb, p_img, depth=None):
         """
         wrapper of forward with preprocessing
         track: (b, tl, n, 2), which means current time step t0 -> t0 + tl
@@ -208,7 +217,7 @@ class TrackTransformer(nn.Module):
         assert len(vid.shape) == 5  # b, t, c, h, w
         track = self._preprocess_track(track)
         vid = self._preprocess_vid(vid)
-        return self.forward(vid, track, task_emb, p_img)
+        return self.forward(vid, track, task_emb, p_img, depth)
 
     def forward_loss(self,
                      vid,
@@ -217,6 +226,7 @@ class TrackTransformer(nn.Module):
                      lbd_track,
                      lbd_img,
                      p_img,
+                     depth=None,
                      return_outs=False,
                      vis=None):
         """
@@ -233,11 +243,12 @@ class TrackTransformer(nn.Module):
         vid = self._preprocess_vid(vid)
         vis = self._preprocess_vis(vis)
 
-        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img)
+        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth)
         vis[vis == 0] = .1
         track_channels = 2 + int(self.use_points)
         vis = repeat(vis, "b tl n -> b tl n c", c=track_channels)
         track_loss = torch.mean((rec_track - track) ** 2 * vis)
+        vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
         img_loss = torch.mean((rec_patches - self._patchify(vid)) ** 2)
         loss = lbd_track * track_loss + lbd_img * img_loss
 
@@ -251,7 +262,7 @@ class TrackTransformer(nn.Module):
             return loss.sum(), ret_dict, (rec_track, rec_patches)
         return loss.sum(), ret_dict
 
-    def forward_vis(self, vid, track, task_emb, p_img):
+    def forward_vis(self, vid, track, task_emb, p_img, depth=None, intrinsic=None, vis_points=True):
         """
         track: (b, tl, n, (2 or 3))
         vid: (b, t, c, h, w)
@@ -264,9 +275,10 @@ class TrackTransformer(nn.Module):
         track = self._preprocess_track(track)
         vid = self._preprocess_vid(vid)
 
-        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img)
+        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth)
         track_loss = F.mse_loss(rec_track, track)
-        img_loss = F.mse_loss(rec_patches, self._patchify(vid))
+        in_vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
+        img_loss = F.mse_loss(rec_patches, self._patchify(in_vid))
         loss = track_loss + img_loss
 
         rec_image = self._unpatchify(rec_patches)
@@ -277,14 +289,27 @@ class TrackTransformer(nn.Module):
         combined_image = torch.clamp(combined_image, 0, 255)
         combined_image = rearrange(combined_image, '1 c h w -> h w c')
 
-        if not self.use_points:
-            track = track.clone()
-            rec_track = rec_track.clone()
+        track = track.clone()
+        rec_track = rec_track.clone()
+        if self.use_points and vis_points:
+            vis = Visualizer()
+            track_colored_points = get_colored_point_cloud_with_tracks(*to_cpu(_vid, depth, track, intrinsic.squeeze()))
+            track_traj = torch.from_numpy(vis.get_pointcloud(track_colored_points))
+            track_traj = rearrange(track_traj, 'h w c -> 1 1 c h w')
 
-            rec_track_vid = tracks_to_video(rec_track, img_size=H)
-            track_vid = tracks_to_video(track, img_size=H)
+            rec_track_colored_points = get_colored_point_cloud_with_tracks(*to_cpu(_vid, depth, rec_track, intrinsic.squeeze()))
+            rec_track_traj = torch.from_numpy(vis.get_pointcloud(rec_track_colored_points))
+            rec_track_traj = rearrange(rec_track_traj, 'h w c -> 1 1 c h w')
 
-            combined_track_vid = torch.cat([track_vid, rec_track_vid], dim=-1)
+            combined_track_vid = torch.cat([track_traj, rec_track_traj], dim=-1)
+        else:
+            if self.use_points:
+                track = convert_points_to_tracks(track, intrinsic.squeeze(), vid.shape[-2:])
+            
+            rec_track_traj = tracks_to_video(rec_track, img_size=H)
+            track_traj = tracks_to_video(track, img_size=H)
+
+            combined_track_vid = torch.cat([track_traj, rec_track_traj], dim=-1)
 
             _vid = torch.cat([_vid, _vid], dim=-1)
             combined_track_vid = _vid * .25 + combined_track_vid * .75
@@ -294,8 +319,7 @@ class TrackTransformer(nn.Module):
             "track_loss": track_loss.sum().item(),
             "img_loss": img_loss.sum().item(),
             "combined_image": combined_image.cpu().numpy().astype(np.uint8),
-            "combined_track_vid": combined_track_vid.cpu().numpy().astype(np.uint8) if not self.use_points else 
-                                  np.random.randn(1,3,128,128).astype(np.uint8) # TODO: Implement visualizer for pointcloud
+            "combined_track_vid": combined_track_vid.cpu().numpy().astype(np.uint8)
         }
 
         return loss.sum(), ret_dict
@@ -324,9 +348,10 @@ class TrackTransformer(nn.Module):
         p = self.img_proj_encoder.patch_size[0]
         h = self.img_size[0] // p
         w = self.img_size[1] // p
+        c = 3 + int(self.depth_dim) if self.depth_dim else 3
         assert h * w == x.shape[1]
 
-        x = rearrange(x, "n (h w) (p q t c) -> n h w p q t c", h=h, w=w, p=p, q=p, t=self.frame_stack, c=3)
+        x = rearrange(x, "n (h w) (p q t c) -> n h w p q t c", h=h, w=w, p=p, q=p, t=self.frame_stack, c=c)
         x = rearrange(x, "n h w p q t c -> n t c h p w q")
         imgs = rearrange(x, "n t c h p w q -> n t c (h p) (w q)")
         return imgs

@@ -8,6 +8,8 @@ from PIL import Image
 from einops import rearrange
 from atm.utils.flow_utils import combine_track_and_img, draw_traj_on_images
 from atm.utils.video_utils import video_pad_time
+from atm.dataloader.base_dataset import convert_points_to_tracks
+from atm.utils.visualizer import Visualizer, get_colored_point_cloud_with_tracks
 
 
 obs_key_mapping = {
@@ -53,7 +55,7 @@ def render_done_to_boundary(frame, success, color=(0, 255, 0)):
 
 @torch.no_grad()
 def rollout(env_dict, policy, num_env_rollouts, horizon=None, return_wandb_video=True,
-            success_vid_first=False, fail_vid_first=False, connect_points_with_line=False):
+            success_vid_first=False, fail_vid_first=False, connect_points_with_line=False, vis_points=False):
     policy.eval()
     all_env_indices = []
     all_env_rewards = []
@@ -81,30 +83,66 @@ def rollout(env_dict, policy, num_env_rollouts, horizon=None, return_wandb_video
             step_i = 0
             while not done and (horizon is None or step_i < horizon):
                 rgb = obs["image"]  # (b, v, h, w, c)
+                depth = obs["depth"] # (b, v, h, w, c)
+                intrinsic = obs["intrinsic"] # (b, v, 3, 3))
                 task_emb = obs.get("task_emb", None)
                 extra_states = {k: obs[obs_key_mapping[k]] for k in policy.extra_state_keys}
-                a, _tracks = policy.act(rgb, task_emb, extra_states)
+                a, _tracks = policy.act(rgb, depth, intrinsic, task_emb, extra_states)
                 obs, r, done, info = env.step(a)
                 reward = list(r) if reward is None else [old_r + new_r for old_r, new_r in zip(reward, r)]
                 done = all(done)
                 success = list(info["success"])
 
                 video_img = rearrange(rgb.copy(), "b v h w c -> b v c h w")
+                depth = rearrange(depth, "b v h w c -> b v c h w")
                 b, _, c, h, w = video_img.shape
 
                 if _tracks is not None:
                     _track, _rec_track = _tracks
-                    if connect_points_with_line:
-                        base_track_img = draw_traj_on_images(_rec_track[:, 0], video_img[:, 0])  # (b, c, h, w)
-                        wrist_track_img = draw_traj_on_images(_rec_track[:, 1], video_img[:, 1])
-                        frame = np.concatenate([base_track_img, np.ones((b, c, h, 2), dtype=np.uint8)*255, wrist_track_img], axis=-1)  # (b, c, h, 2w)
+                    if not vis_points:
+                        if policy.use_points:
+                            converted_tracks = []
+                            for i in range(_rec_track.shape[0]):
+                                tracks_views = [] 
+                                for view in range(_rec_track.shape[1]):
+                                    converted_track = convert_points_to_tracks(_rec_track[i, view], intrinsic[i, view], (h, w))
+                                    tracks_views.append(converted_track)
+
+                                converted_tracks.append(torch.stack(tracks_views, dim=0))
+
+                            _rec_track = torch.stack(converted_tracks, dim=0)
+
+                        if connect_points_with_line:
+                            base_track_img = draw_traj_on_images(_rec_track[:, 0], video_img[:, 0])  # (b, c, h, w)
+                            wrist_track_img = draw_traj_on_images(_rec_track[:, 1], video_img[:, 1])
+                            frame = np.concatenate([base_track_img, np.ones((b, c, h, 2), dtype=np.uint8)*255, wrist_track_img], axis=-1)  # (b, c, h, 2w)
+                        else:
+                            base_track_img = combine_track_and_img(_rec_track[:, 0], video_img[:, 0])  # (b, c, h, w)
+                            wrist_track_img = combine_track_and_img(_rec_track[:, 1], video_img[:, 1])
+                            frame = np.concatenate([base_track_img, np.ones((b, c, h, 2), dtype=np.uint8) * 255, wrist_track_img], axis=-1)  # (b, c, h, 2w)
                     else:
-                        base_track_img = combine_track_and_img(_rec_track[:, 0], video_img[:, 0])  # (b, c, h, w)
-                        wrist_track_img = combine_track_and_img(_rec_track[:, 1], video_img[:, 1])
-                        frame = np.concatenate([base_track_img, np.ones((b, c, h, 2), dtype=np.uint8) * 255, wrist_track_img], axis=-1)  # (b, c, h, 2w)
+                        base_frames = []
+                        wrist_frames = []
+                        _rec_track = _rec_track.detach().cpu()
+                        video_img, depth = torch.from_numpy(video_img), torch.from_numpy(depth)
+                        vis = Visualizer()
+                        for i in range(video_img.shape[0]):
+                            base_track_points = get_colored_point_cloud_with_tracks(video_img[i, 0], depth[i, 0], _rec_track[i, 0], intrinsic=intrinsic[i, 0])
+                            wrist_track_points = get_colored_point_cloud_with_tracks(video_img[i, 1], depth[i, 1], _rec_track[i, 1], intrinsic=intrinsic[i, 1])
+                            
+                            base_track_point_img = vis.get_pointcloud(base_track_points)
+                            wrist_track_point_img = vis.get_pointcloud(wrist_track_points)
+
+                            base_track_point_img = rearrange(base_track_point_img, 'h w c -> c h w')
+                            wrist_track_point_img = rearrange(wrist_track_point_img, 'h w c -> c h w')
+                            base_frames.append(base_track_point_img)
+                            wrist_frames.append(wrist_track_point_img)
+
+                        base_frames = np.stack(base_frames, axis=0)
+                        wrist_frames = np.stack(wrist_frames, axis=0)
+                        frame = np.concatenate([base_frames, np.ones((*base_frames.shape[:-1], 2), dtype=np.uint8) * 255, wrist_frames], axis=-1)
                 else:
                     frame = np.concatenate([video_img[:, 0], np.ones((b, c, h, w), dtype=np.uint8)*255, video_img[:, 1]], axis=-1)  # (b, c, h, 2w)
-
                 frame = render_done_to_boundary(frame, success)
                 episode_frames.append(frame)
 

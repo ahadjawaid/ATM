@@ -2,6 +2,7 @@ import wandb
 import numpy as np
 import random
 from omegaconf import DictConfig, OmegaConf
+import torch
 
 
 def init_wandb(cfg):
@@ -81,3 +82,6 @@ def get_named_trainable_params(model):
     return [
         (name, param) for name, param in model.named_parameters() if param.requires_grad
     ]
+
+def to_cpu(*args):
+    return tuple(map(lambda x: x.cpu() if isinstance(x, torch.Tensor) else x, args))

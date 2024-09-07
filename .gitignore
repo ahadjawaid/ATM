@@ -26,8 +26,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-
+.vscode
 .DS_Store
+*dataset_args.yaml
+visualize_*.ipynb
 
 # C extensions
 *.so

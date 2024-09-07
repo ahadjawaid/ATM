@@ -16,19 +16,22 @@ wandb:
   group: ${experiment}
   mode: online
 
-train_gpus: [0]
+train_gpus: [0, 1]
 
 # Training
 lr: 1e-4
 batch_size: 512
 mix_precision: true
-num_workers: 10
+num_workers: 7
 val_freq: 5
 save_freq: 10
 clip_grad: 10.
-epochs: 1001
+epochs: 251
 seed: 0
 dry: false
+use_points: true
+depth_dim: true
+aug_prob: 0.7553983553695175
 
 model_name: TrackTransformer
 p_img: 0.5
@@ -46,8 +49,6 @@ num_track_ts: 16
 num_track_ids: 32
 patch_size: 16
 track_patch_size: 4
-
-aug_prob: 0.9
 
 train_dataset: ???
 val_dataset: ???
@@ -86,7 +87,8 @@ model_cfg:
     input_size: 768
     hidden_size: 128
     num_layers: 1
-  use_points: true
+  use_points: ${use_points}
+  depth_dim: ${depth_dim}
 
 dataset_cfg:
   img_size: ${img_size}
@@ -95,4 +97,4 @@ dataset_cfg:
   num_track_ids: ${num_track_ids}
   cache_all: true
   cache_image: false
-  use_points: true
+  use_points: ${use_points}

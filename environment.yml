@@ -6,6 +6,8 @@ dependencies:
   - python=3.8.18
   - setuptools==63.2.0
   - wheel==0.38.4
+  - pip==22.3.1
+  - cmake
   - pip:
       - bddl==1.0.1
       - click==8.1.7
@@ -76,4 +78,7 @@ dependencies:
       - tqdm==4.66.1
       - transformers==4.31.0
       - wandb==0.15.9
+      - plotly==5.23.0
+      - flask==3.0.3
+      - open3d==0.18.0
 prefix: /home/cwen/anaconda3/envs/atm

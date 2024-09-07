@@ -27,16 +27,6 @@ def load_rgb(file_name):
     return np.array(Image.open(file_name))
 
 
-class ImgTrackColorJitter(torchvision.transforms.ColorJitter):
-    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
-        super().__init__(brightness=brightness, contrast=contrast, saturation=saturation, hue=hue)
-
-    def forward(self, inputs):
-        img, tracks = inputs
-        img = super().forward(img)
-        return img, tracks
-
-
 class CropRandomizerReturnCoords(CropRandomizer):
     def _forward_in(self, inputs, return_crop_inds=False):
         """
@@ -89,15 +79,22 @@ class ImgViewDiffTranslationAug(nn.Module):
         """
         Args:
             img: [b, t, C, H, W]
+            depth: [b, t, C, H, W]
             tracks: [b, t, track_len, n, 2]
         """
-        img, tracks = inputs
+        img, tracks, depth = inputs
 
         batch_size, temporal_len, img_c, img_h, img_w = img.shape
         img = img.reshape(batch_size, temporal_len * img_c, img_h, img_w)
-        out = F.pad(img, pad=(self.pad_translation,) * 4, mode="replicate")
-        out, crop_inds = self.crop_randomizer._forward_in(out, return_crop_inds=True)  # crop_inds: (b, num_crops, 2), where we already set num_crops=1
-        out = out.reshape(batch_size, temporal_len, img_c, img_h, img_w)
+        translated_img = F.pad(img, pad=(self.pad_translation,) * 4, mode="replicate")
+        cropped_img, crop_inds = self.crop_randomizer._forward_in(translated_img, return_crop_inds=True)  # crop_inds: (b, num_crops, 2), where we already set num_crops=1
+        adjusted_img = cropped_img.reshape(batch_size, temporal_len, img_c, img_h, img_w)
+        
+        batch_size, temporal_len, depth_c, depth_h, depth_w = depth.shape
+        depth = depth.reshape(batch_size, temporal_len * depth_c, depth_h, depth_w)
+        translated_depth = F.pad(depth, pad=(self.pad_translation,) * 4, mode="replicate")
+        cropped_depth = ObsUtils.crop_image_from_indices(translated_depth, crop_inds, self.crop_randomizer.crop_height, self.crop_randomizer.crop_width)
+        adjusted_depth = cropped_depth.reshape(batch_size, temporal_len, depth_c, depth_h, depth_w)
 
         if self.augment_track:
             translate_h = (crop_inds[:, 0, 0] - self.pad_translation) / img_h  # (b,)
@@ -108,4 +105,4 @@ class ImgViewDiffTranslationAug(nn.Module):
             tracks[..., 0] += translate_h
             tracks[..., 1] += translate_w
 
-        return out, tracks
+        return adjusted_img, tracks, adjusted_depth

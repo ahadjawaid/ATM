@@ -11,6 +11,7 @@ from lightning.fabric import Fabric
 
 from atm.model import *
 from atm.dataloader import ATMPretrainDataset, get_dataloader
+from atm.dataloader.cache_dataset import CachedAugmentedDataset
 from atm.utils.log_utils import BestAvgLoss, MetricLogger
 from atm.utils.train_utils import init_wandb, setup_lr_scheduler, setup_optimizer
 
@@ -25,10 +26,10 @@ def main(cfg: DictConfig):
 
     None if (cfg.dry or not fabric.is_global_zero) else init_wandb(cfg)
 
-    train_dataset = ATMPretrainDataset(dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
+    train_dataset = CachedAugmentedDataset(dataset='atm', dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
     train_loader = get_dataloader(train_dataset, mode="train", num_workers=cfg.num_workers, batch_size=cfg.batch_size)
 
-    train_vis_dataset = ATMPretrainDataset(dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
+    train_vis_dataset = CachedAugmentedDataset(dataset='atm', dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
     train_vis_dataloader = get_dataloader(train_vis_dataset, mode="train", num_workers=1, batch_size=1)
 
     val_dataset = ATMPretrainDataset(dataset_dir=cfg.val_dataset, **cfg.dataset_cfg, aug_prob=0.)
@@ -107,7 +108,7 @@ def main(cfg: DictConfig):
                     vis_dict = visualize(model, vis_dataloader, mix_precision=cfg.mix_precision)
 
                     caption = f"reconstruction (right) @ epoch {epoch}; \n Track MSE: {vis_dict['track_loss']:.4f}"
-                    wandb_vis_track = wandb.Video(vis_dict["combined_track_vid"], fps=10, format="mp4", caption=caption)
+                    wandb_vis_track = wandb.Video(vis_dict["combined_track_vid"], fps=1, format="mp4", caption=caption)
                     None if cfg.dry else wandb.log({f"{mode}/reconstruct_track": wandb_vis_track}, step=epoch)
 
                 vis_and_log(model, train_vis_dataloader, mode="train")
@@ -136,9 +137,9 @@ def run_one_epoch(fabric,
 
     model.train()
     i = 0
-    for vid, track, vis, task_emb in tqdm(dataloader):
+    for vid, track, vis, task_emb, intrinsic, depth in tqdm(dataloader):
         if mix_precision:
-            vid, track, vis, task_emb = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16()
+            vid, track, vis, task_emb, depth = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16(), depth.bfloat16()
         b, t, c, h, w = vid.shape
         b, tl, n, _ = track.shape
         b, tl, n = vis.shape
@@ -146,6 +147,7 @@ def run_one_epoch(fabric,
             vid,
             track,
             task_emb,
+            depth=depth,
             lbd_track=lbd_track,
             lbd_img=lbd_img,
             p_img=p_img)  # do not use vis
@@ -180,10 +182,10 @@ def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, 
     model.eval()
 
     i = 0
-    for vid, track, vis, task_emb in tqdm(dataloader):
-        vid, track, vis, task_emb = vid.cuda(), track.cuda(), vis.cuda(), task_emb.cuda()
+    for vid, track, vis, task_emb, intrinsic, depth in tqdm(dataloader):
+        vid, track, vis, task_emb, depth = vid.cuda(), track.cuda(), vis.cuda(), task_emb.cuda(), depth.cuda()
         if mix_precision:
-            vid, track, vis, task_emb = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16()
+            vid, track, vis, task_emb, depth = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16(), depth.bfloat16()
         b, t, c, h, w = vid.shape
         b, tl, n, _ = track.shape
 
@@ -191,6 +193,7 @@ def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, 
             vid,
             track,
             task_emb,
+            depth=depth,
             lbd_track=lbd_track,
             lbd_img=lbd_img,
             p_img=p_img,
@@ -216,11 +219,11 @@ def visualize(model, dataloader, mix_precision=False):
     model.eval()
     keep_eval_dict = None
 
-    for i, (vid, track, vis, task_emb) in enumerate(dataloader):
-        vid, track, task_emb = vid.cuda(), track.cuda(), task_emb.cuda()
+    for i, (vid, track, vis, task_emb, intrinsic, depth) in enumerate(dataloader):
+        vid, track, task_emb, intrinsic, depth = map(lambda x: x.cuda(), (vid, track, task_emb, intrinsic, depth))
         if mix_precision:
-            vid, track, task_emb = vid.bfloat16(), track.bfloat16(), task_emb.bfloat16()
-        _, eval_dict = model.forward_vis(vid, track, task_emb, p_img=0)
+            vid, track, task_emb, depth = map(lambda x: x.bfloat16(), (vid, track, task_emb, depth))
+        _, eval_dict = model.forward_vis(vid, track, task_emb, p_img=0, depth=depth, intrinsic=intrinsic)
         if keep_eval_dict is None or torch.rand(1) < 0.1:
             keep_eval_dict = eval_dict
 

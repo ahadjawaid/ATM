@@ -42,22 +42,27 @@ class ObservationWrapper(Wrapper):
 class LiberoImageUpsideDownWrapper(Wrapper):
     def __init__(self, env):
         super(LiberoImageUpsideDownWrapper, self).__init__(env)
+        self.keys = ['image', 'depth']
 
     def reset(self):
         obs = self.env.reset()
-        obs["agentview_image"] = obs["agentview_image"][:, ::-1, :, :]  # (b, h, w, c)
-        obs["robot0_eye_in_hand_image"] = obs["robot0_eye_in_hand_image"][:, ::-1, :, :]  # (b, h, w, c)
+        obs = self._flip(obs)
         return obs
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
-        obs["agentview_image"] = obs["agentview_image"][:, ::-1, :, :]  # (b, h, w, c)
-        obs["robot0_eye_in_hand_image"] = obs["robot0_eye_in_hand_image"][:, ::-1, :, :]  # (b, h, w, c)
+        obs = self._flip(obs)
         return obs, reward, done, info
+    
+    def _flip(self, obs):
+        for key in self.keys:
+            obs[f"agentview_{key}"] = obs[f"agentview_{key}"][:, ::-1, :, :]  # (b, h, w, c)
+            obs[f"robot0_eye_in_hand_{key}"] = obs[f"robot0_eye_in_hand_{key}"][:, ::-1, :, :]  # (b, h, w, c)
+        return obs
 
 
 class LiberoObservationWrapper(ObservationWrapper):
-    valid_obs_types = ["image"]
+    valid_obs_types = ["image", "depth", "intrinsic"]
 
     def __init__(self, env, masks, cameras):
         super().__init__(env, masks, cameras)

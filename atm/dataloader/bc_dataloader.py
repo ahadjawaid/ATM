@@ -65,11 +65,7 @@ class BCDataset(BaseDataset):
         depth = torch.stack(all_view_depths, dim=0)
         intrinsics = torch.stack(intrinsics, dim=0)
         track_transformer_obs = torch.stack(all_view_track_transformer_frames, dim=0)  # v t tt_fs c h w
-
-        # augment rgbs and tracks
-        if np.random.rand() < self.aug_prob:
-            obs, track = self.augmentor((obs / 255., track))
-            obs = obs * 255.
+        
 
         # sample tracks
         sample_track, sample_vi = [], []

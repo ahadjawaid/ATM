@@ -12,6 +12,7 @@ from libero import benchmark, get_libero_path
 from libero.envs import OffScreenRenderEnv, DummyVectorEnv, SubprocVecEnv
 from libero.envs.env_wrapper import ControlEnv
 from robosuite.wrappers import Wrapper
+from robosuite.utils.camera_utils import get_camera_intrinsic_matrix
 
 
 def merge_dict(dict_obj):
@@ -91,6 +92,34 @@ class LiberoResetWrapper(Wrapper):
         self.env.seed(seed)
 
 
+class LiberoCameraIntrinsicWrapper(Wrapper):
+    def __init__(self, env, cameras, camera_height, camera_width):
+        super().__init__(env)
+        self.cameras = cameras
+        self.camera_height = camera_height
+        self.camera_width = camera_width
+    
+    def reset(self):
+        obs = self.env.reset()
+        obs = self._add_camera_intrinsic_to_obs(obs)
+        return obs
+    
+    def step(self, action):
+        obs, reward, done, info = self.env.step(action)
+        obs = self._add_camera_intrinsic_to_obs(obs)
+        return obs, reward, done, info
+    
+    def _add_camera_intrinsic_to_obs(self, obs):
+        for c in self.cameras:
+            name = f'{c}_intrinsic'
+            intrinsic = get_camera_intrinsic_matrix(self.env.sim, c, self.camera_height, self.camera_width)
+            obs[name] = intrinsic
+        return obs
+    
+    def seed(self, seed):
+        self.env.seed(seed)
+
+
 def make_libero_env(task_suite_name, task_name, img_h, img_w, task_embedding=None, gpu_id=-1, vec_env_num=1, seed=0):
     """
     Build a LIBERO environment according to the task suite name and task name.
@@ -131,7 +160,8 @@ def make_libero_env(task_suite_name, task_name, img_h, img_w, task_embedding=Non
         "bddl_file_name": task_bddl_file,
         "camera_heights": img_h,
         "camera_widths": img_w,
-        "render_gpu_device_id": gpu_id
+        "render_gpu_device_id": gpu_id,
+        "camera_depths": True,
     }
 
     init_states = task_suite.get_task_init_states(task_id)
@@ -139,8 +169,10 @@ def make_libero_env(task_suite_name, task_name, img_h, img_w, task_embedding=Non
     num_states_per_env = len(init_states) // vec_env_num
     def env_func(env_idx):
         base_env = OffScreenRenderEnv(**env_args)
+        cameras = sorted(base_env.env.camera_names)
         base_env = LiberoResetWrapper(base_env, init_states=init_states[env_idx*num_states_per_env:(env_idx+1)*num_states_per_env])
         base_env = LiberoTaskEmbWrapper(base_env, task_emb=task_suite.get_task_emb(task_id))
+        base_env = LiberoCameraIntrinsicWrapper(base_env, cameras, env_args['camera_heights'], env_args['camera_widths'])
         base_env.seed(seed)
         return base_env
 

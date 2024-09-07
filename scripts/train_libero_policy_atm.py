@@ -1,5 +1,6 @@
 import os
 import argparse
+from pathlib import Path
 
 
 # environment variables
@@ -24,18 +25,17 @@ args = parser.parse_args()
 # training configs
 CONFIG_NAME = "libero_vilt"
 
-train_gpu_ids = [0]
+train_gpu_ids = [0, 1]
 NUM_DEMOS = 10
 
-root_dir = "./data/atm_libero/"
+root_dir = Path("./data/atm_libero/")
 suite_name = args.suite
-task_dir_list = os.listdir(os.path.join(root_dir, suite_name))
+task_dir_list = [path for path in (root_dir/suite_name).iterdir() if path.is_dir()]
 task_dir_list.sort()
 
 # dataset
-train_path_list = [f"{root_dir}/{suite_name}/{task_dir}/bc_train_{NUM_DEMOS}" for task_dir in task_dir_list]
-val_path_list = [f"{root_dir}/{suite_name}/{task_dir}/val" for task_dir in task_dir_list]
-
+train_path_list = [str(task_dir/f"bc_train_{NUM_DEMOS}") for task_dir in task_dir_list]
+val_path_list = [str(task_dir/"val") for task_dir in task_dir_list]
 track_fn = args.track_transformer or DEFAULT_TRACK_TRANSFORMERS[suite_name]
 
 for seed in range(args.n_seeds):

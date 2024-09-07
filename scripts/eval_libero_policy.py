@@ -1,5 +1,6 @@
 import os
 import argparse
+from pathlib import Path
 
 # environment variables
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -13,12 +14,12 @@ parser.add_argument("--exp-dir", required=True, help="The path to the folder of 
 args = parser.parse_args()
 
 # evaluation configs
-train_gpu_ids = [0]
-env_gpu_ids = [0]
+train_gpu_ids = [0, 1]
+env_gpu_ids = [0, 1]
 
 root_dir = "./data/atm_libero"
 suite_name = args.suite
-task_dir_list = os.listdir(os.path.join(root_dir, suite_name))
+task_dir_list = [path.stem for path in (Path(root_dir)/suite_name).iterdir() if path.is_dir()]
 task_dir_list.sort()
 
 # environment

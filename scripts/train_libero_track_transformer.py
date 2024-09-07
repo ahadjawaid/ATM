@@ -15,7 +15,7 @@ args = parser.parse_args()
 # training configs
 CONFIG_NAME = "libero_track_transformer"
 
-gpu_ids = [0]
+gpu_ids = [0, 1]
 
 root_dir = "./data/atm_libero/"
 suite_name = args.suite
@@ -26,7 +26,7 @@ if suite_name == "libero_100":
     train_dataset_list = glob(os.path.join(root_dir, "libero_90/*/train/")) + glob(os.path.join(root_dir, "libero_10/*/train/"))
     val1_dataset_list = glob(os.path.join(root_dir, "libero_90/*/val/")) + glob(os.path.join(root_dir, "libero_10/*/val/"))
 else:
-    EPOCH = 1001
+    EPOCH = 251
     train_dataset_list = glob(os.path.join(root_dir, f"{suite_name}/*/train/"))
     val1_dataset_list = glob(os.path.join(root_dir, f"{suite_name}/*/val/"))
 
