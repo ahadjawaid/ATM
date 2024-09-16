@@ -2,6 +2,7 @@ import argparse
 import os
 import glob
 from natsort import natsorted
+from pathlib import Path
 
 def split_pretrain_dataset(files, train_folder, val_folder, train_ratio):
     num_files = len(files)
@@ -41,24 +42,25 @@ def split_bc_train_dataset(root_dir, pretrain_train_folder, num_trains=[10, 20, 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--folder', type=str, default='./data/atm_libero/')
+    parser.add_argument('--suite', type=str, required=True)
     parser.add_argument('--train_ratio', type=float, default=0.9)
     args = parser.parse_args()
 
-    for suite_name in os.listdir(args.folder):
-        for task_name in os.listdir(os.path.join(args.folder, suite_name)):
-            root_dir = os.path.join(args.folder, suite_name, task_name)
-            files = glob.glob(os.path.join(root_dir, '*.hdf5'))
-            if len(files) == 0:
-                raise ValueError('No .hdf5 files found in {}'.format(args.folder))
+    suit_dir = Path(args.folder) / args.suite
+    task_dirs = [x for x in suit_dir.iterdir() if x.is_dir()]
+    for task_path in task_dirs:
+        files = list(task_path.glob('*.hdf5'))
+        if len(files) == 0:
+            raise ValueError('No .hdf5 files found in {}'.format(args.folder))
 
-            files = natsorted(files)
+        files = natsorted(files)
 
-            train_folder = os.path.join(root_dir, 'train')
-            val_folder = os.path.join(root_dir, 'val')
+        train_folder = task_path / 'train'
+        val_folder = task_path / 'val'
 
-            if not os.path.exists(train_folder):
-                split_pretrain_dataset(files, train_folder, val_folder, args.train_ratio)
+        if not os.path.exists(train_folder):
+            split_pretrain_dataset(files, train_folder, val_folder, args.train_ratio)
 
-                pretrain_train_folder = train_folder
-                split_bc_train_dataset(root_dir, pretrain_train_folder, num_trains=[2, 5, 10, 20, 30, 40, 45])
+            pretrain_train_folder = train_folder
+            split_bc_train_dataset(task_path, pretrain_train_folder, num_trains=[2, 5, 10, 20, 30, 40, 45])
 

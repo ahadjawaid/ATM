@@ -27,6 +27,7 @@ class BaseDataset(Dataset):
                  views=None,
                  extra_state_keys=None,
                  use_points=False,
+                 mixed_precision=False
     ):
         super().__init__()
         self.dataset_dir = dataset_dir
@@ -44,6 +45,7 @@ class BaseDataset(Dataset):
         self.cache_all = cache_all
         self.cache_image = cache_image
         self.use_points = use_points
+        self.mixed_precision = mixed_precision
         if not cache_all:
             assert not cache_image, "cache_image is only supported when cache_all is True."
 
@@ -115,7 +117,7 @@ class BaseDataset(Dataset):
             tracks = demo["root"][v]['tracks'][0]  # t, num_tracks, 2
             vis = demo["root"][v]['vis'][0]  # t, num_tracks
             depth = rearrange(demo["root"][v]['depth'], 't h w c -> t c h w')
-            intrinsic = demo["root"][v]['intrinsic']
+            intrinsic: np.ndarray = demo["root"][v]['intrinsic']
             t, c, h, w = vids.shape
             last_frame, last_track, last_vis, last_depth = vids[-1:], tracks[-1:], vis[-1:], depth[-1:]
             vids = np.concatenate([vids, np.repeat(last_frame, pad_length, axis=0)], axis=0)
@@ -131,12 +133,20 @@ class BaseDataset(Dataset):
             if h != self.img_size[0] or w != self.img_size[1]:
                 vids = F.interpolate(vids, size=self.img_size, mode="bilinear", align_corners=False)
 
+            if self.mixed_precision:
+                vids = vids.half()
+                tracks = tracks.half()
+                vis = vis.half()
+                depth = depth.half()
+                intrinsic = intrinsic.astype(np.float16)
+
             demo["root"][v]['video'] = vids
             demo["root"][v]['tracks'] = tracks
             demo["root"][v]['vis'] = vis
             demo["root"][v]['depth'] = depth
             demo['root'][v]['intrinsic'] = intrinsic
 
+        
         actions = demo["root"]["actions"]
         if actions.ndim == 3:
             actions = actions[0]
@@ -157,6 +167,11 @@ class BaseDataset(Dataset):
         actions = torch.Tensor(actions)
         task_embs = torch.Tensor(task_embs)
         extra_states_dict = {k: torch.Tensor(v) for k, v in extra_states_dict.items()}
+
+        if self.mixed_precision:
+            actions = actions.half()
+            task_embs = task_embs.half()
+            extra_states_dict = {k: v.half() for k, v in extra_states_dict.items()}
 
         demo["root"]['actions'] = actions
         demo['root']['task_emb_bert'] = task_embs

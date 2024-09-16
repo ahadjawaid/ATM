@@ -16,6 +16,8 @@ from hydra.utils import to_absolute_path
 
 from atm.utils.flow_utils import sample_from_mask, sample_double_grid
 from atm.utils.cotracker_utils import Visualizer
+from torch.cuda.amp import autocast
+from pathlib import Path
 
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
@@ -88,10 +90,17 @@ def get_task_bert_embs(libero_root_dir):
         task_name_to_emb = np.load("libero/task_embedding_caches/task_emb_bert.npy", allow_pickle=True).item()
     return task_name_to_emb
 
+def track(tracker, video, points):
+    with torch.no_grad(), autocast():
+        pred_tracks, pred_vis = tracker(video.cuda(), queries=points.cuda(), backward_tracking=True)
+    
+    return pred_tracks, pred_vis
 
 def track_and_remove(tracker, video, points, var_threshold=10.):
     B, T, C, H, W = video.shape
-    pred_tracks, pred_vis = tracker(video, queries=points, backward_tracking=True) # [1, T, N, 2]
+
+    pred_tracks, pred_vis = track(tracker, video, points)
+    pred_tracks, pred_vis = pred_tracks.cpu(), pred_vis.cpu()
 
     var = torch.var(pred_tracks, dim=1)  # [1, N, 2]
     var = torch.sum(var, dim=-1)[0]  # List
@@ -113,7 +122,8 @@ def track_and_remove(tracker, video, points, var_threshold=10.):
     new_points[:, :, 1:] += noise
 
     # Track new points
-    pred_tracks, pred_vis = tracker(video, queries=new_points, backward_tracking=True)
+    pred_tracks, pred_vis = track(tracker, video, new_points)
+    pred_tracks, pred_vis = pred_tracks.cpu(), pred_vis.cpu()
 
     return pred_tracks, pred_vis
 
@@ -121,24 +131,24 @@ def track_and_remove(tracker, video, points, var_threshold=10.):
 def track_through_video(video, track_model, num_points=1000):
     T, C, H, W = video.shape
 
-    video = torch.from_numpy(video).cuda().float()
+    video = torch.from_numpy(video).float()
 
     # sample random points
     points = sample_from_mask(np.ones((H, W, 1)) * 255, num_samples=num_points)
-    points = torch.from_numpy(points).float().cuda()
-    points = torch.cat([torch.randint_like(points[:, :1], 0, T), points], dim=-1).cuda()
+    points = torch.from_numpy(points).float()
+    points = torch.cat([torch.randint_like(points[:, :1], 0, T), points], dim=-1)
 
     # sample grid points
-    grid_points = sample_double_grid(7, device="cuda")
+    grid_points = sample_double_grid(7)
     grid_points[:, 0] = grid_points[:, 0] * H
     grid_points[:, 1] = grid_points[:, 1] * W
-    grid_points = torch.cat([torch.randint_like(grid_points[:, :1], 0, T), grid_points], dim=-1).cuda()
+    grid_points = torch.cat([torch.randint_like(grid_points[:, :1], 0, T), grid_points], dim=-1)
 
     pred_tracks, pred_vis = track_and_remove(track_model, video[None], points[None])
     pred_grid_tracks, pred_grid_vis = track_and_remove(track_model, video[None], grid_points[None], var_threshold=0.)
 
-    pred_tracks = torch.cat([pred_grid_tracks, pred_tracks], dim=2)
-    pred_vis = torch.cat([pred_grid_vis, pred_vis], dim=2)
+    pred_tracks = torch.cat([pred_grid_tracks, pred_tracks], dim=2).cpu()
+    pred_vis = torch.cat([pred_grid_vis, pred_vis], dim=2).cpu()
     return pred_tracks, pred_vis
 
 
@@ -278,15 +288,17 @@ def main(root, save, suite, skip_exist):
 
     # load task name embeddings
     task_bert_embs_dict = get_task_bert_embs(root)
-    h5_files = [file_path for file_path in os.listdir(suite_dir) if str(file_path).endswith('.hdf5')]
-    for source_h5 in h5_files:
-        source_h5_path = os.path.join(suite_dir, source_h5)
-        file_name = source_h5.split('.')[0]
-        task_name = get_task_name_from_file_name(file_name)
+    # h5_files = [file_path for file_path in os.listdir(suite_dir) if str(file_path).endswith('.hdf5')]
+    # for source_h5 in h5_files:
+    #     source_h5_path = os.path.join(suite_dir, source_h5)
+    #     file_name = source_h5.split('.')[0]
+        
  
-        save_dir = os.path.join(save, suite, file_name)
-        os.makedirs(save_dir, exist_ok=True)
-        generate_data(source_h5_path, save_dir, cotracker, task_bert_embs_dict[task_name], skip_exist)
+    #     save_dir = os.path.join(save, suite, file_name)
+    #     os.makedirs(save_dir, exist_ok=True)
+    path = Path('./data/atm_libero/libero_10/KITCHEN_SCENE8_put_both_moka_pots_on_the_stove_demo/demo_28.hdf5')
+    task_name = get_task_name_from_file_name(str(path.parent.stem))
+    generate_data(path, path.parent, cotracker, task_bert_embs_dict[task_name], skip_exist)
 
 
 if __name__ == "__main__":

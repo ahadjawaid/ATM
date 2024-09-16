@@ -279,7 +279,7 @@ class BCViLTPolicy(nn.Module):
             expand_task_emb = rearrange(expand_task_emb, "b v t e -> (b v t) e")
             curr_depth_in = rearrange(curr_depth, "b v t fs c h w -> (b v t) fs c h w")
             with torch.no_grad():
-                pred_tr, _ = self.track.reconstruct(track_obs_to_pred, grid_sampled_track, expand_task_emb, depth=curr_depth_in, p_img=0)  # (b v t) tl n d
+                pred_tr, _ = self.track.reconstruct(track_obs_to_pred, grid_sampled_track, expand_task_emb, intrinsic=intrinsic, depth=curr_depth_in, p_img=0)  # (b v t) tl n d
                 recon_tr = rearrange(pred_tr, "(b v t) tl n d -> b v t tl n d", b=b, v=v, t=t)
 
         recon_tr = recon_tr[:, :, :, :self.policy_num_track_ts, :, :]  # truncate the track to a shorter one

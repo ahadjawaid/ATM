@@ -14,6 +14,10 @@ from .transformer import Transformer
 from atm.dataloader.base_dataset import convert_points_to_tracks
 from atm.utils.visualizer import Visualizer, get_colored_point_cloud_with_tracks
 from atm.utils.train_utils import to_cpu
+from atm.utils.distance import euclidean_distance
+from atm.utils.pointcloud import get_point_cloud_from_depth_torch
+from atm.model.pointcloud import PointNetEncoderXYZRGB, PointNetEncoderXYZ
+import matplotlib.pyplot as plt
 
 class TrackTransformer(nn.Module):
     """
@@ -34,16 +38,38 @@ class TrackTransformer(nn.Module):
                  language_encoder_cfg,
                  load_path=None,
                  use_points: bool = False,
-                 depth_dim: bool = False):
+                 depth_dim: bool = False,
+                 use_pc_encoder: bool = False,
+                 use_colored_pc: bool = False):
         super().__init__()
         self.dim = dim = transformer_cfg.dim
         self.use_points = use_points
         self.depth_dim = depth_dim
+        self.use_pc_encoder = use_pc_encoder
+        self.use_colored_pc = use_colored_pc
         self.transformer = self._init_transformer(**transformer_cfg)
         self.track_proj_encoder, self.track_decoder = self._init_track_modules(**track_cfg, dim=dim)
-        self.img_proj_encoder, self.img_decoder = self._init_video_modules(**vid_cfg, dim=dim)
+        
+        vid_cfg_dict = dict(**vid_cfg)
+        img_size = vid_cfg_dict['img_size']
+        img_mean = vid_cfg_dict['img_mean'] if 'img_mean' in vid_cfg_dict else [0.5, 0.5, 0.5]
+        img_std = vid_cfg_dict['img_std'] if 'img_std' in vid_cfg_dict else [0.5, 0.5, 0.5]
+        self.frame_stack = vid_cfg_dict['frame_stack']
+        self.img_normalizer = T.Normalize(img_mean, img_std)
+        self.img_unnormalizer = ImageUnNormalize(img_mean, img_std)
+        if isinstance(img_size, int):
+            img_size = (img_size, img_size)
+        else:
+            img_size = (img_size[0], img_size[1])
+        self.img_size = img_size
+        
+        if self.use_pc_encoder:
+            self.pc_encoder = self._init_pointcloud_modules(dim)
+        else:
+            self.img_proj_encoder, self.img_decoder = self._init_video_modules(**vid_cfg_dict, dim=dim)
         self.language_encoder = self._init_language_encoder(output_size=dim, **language_encoder_cfg)
-        self._init_weights(self.dim, self.num_img_patches)
+        num_img_patches = None if self.use_pc_encoder else self.num_img_patches
+        self._init_weights(self.dim, num_img_patches)
 
         if load_path is not None:
             self.load(load_path)
@@ -79,15 +105,7 @@ class TrackTransformer(nn.Module):
 
         return self.track_proj_encoder, self.track_decoder
 
-    def _init_video_modules(self, dim, img_size, patch_size, frame_stack=1, img_mean=[.5, .5, .5], img_std=[.5, .5, .5]):
-        self.img_normalizer = T.Normalize(img_mean, img_std)
-        self.img_unnormalizer = ImageUnNormalize(img_mean, img_std)
-        if isinstance(img_size, int):
-            img_size = (img_size, img_size)
-        else:
-            img_size = (img_size[0], img_size[1])
-        self.img_size = img_size
-        self.frame_stack = frame_stack
+    def _init_video_modules(self, dim, img_size, patch_size, **kwargs):
         self.patch_size = patch_size
 
         in_channels = (3 + int(self.depth_dim)) * self.frame_stack
@@ -102,29 +120,36 @@ class TrackTransformer(nn.Module):
 
         return self.img_proj_encoder, self.img_decoder
 
+    def _init_pointcloud_modules(self, dim):
+        if self.use_colored_pc:
+            self.pc_encoder = PointNetEncoderXYZRGB(6, dim)
+        else:
+            self.pc_encoder = PointNetEncoderXYZ(3, dim)
+
+        return self.pc_encoder
+
     def _init_language_encoder(self, network_name, **language_encoder_kwargs):
         return eval(network_name)(**language_encoder_kwargs)
 
-    def _init_weights(self, dim, num_img_patches):
+    def _init_weights(self, dim, num_img_patches=None):
         """
         initialize weights; freeze all positional embeddings
         """
         num_track_t = self.num_track_ts // self.track_patch_size
 
         self.track_embed = nn.Parameter(torch.randn(1, num_track_t, 1, dim), requires_grad=True)
-        self.img_embed = nn.Parameter(torch.randn(1, num_img_patches, dim), requires_grad=False)
+        if not self.use_pc_encoder:
+            self.img_embed = nn.Parameter(torch.randn(1, num_img_patches, dim), requires_grad=False)
         self.mask_token = nn.Parameter(torch.randn(1, 1, dim))
 
         track_embed = get_1d_sincos_pos_embed(dim, num_track_t)
         track_embed = rearrange(track_embed, 't d -> () t () d')
         self.track_embed.data.copy_(torch.from_numpy(track_embed))
-
-        num_patches_h, num_patches_w = self.img_size[0] // self.patch_size, self.img_size[1] // self.patch_size
-        img_embed = get_2d_sincos_pos_embed(dim, (num_patches_h, num_patches_w))
-        img_embed = rearrange(img_embed, 'n d -> () n d')
-        self.img_embed.data.copy_(torch.from_numpy(img_embed))
-
-        print(f"num_track_patches: {self.num_track_patches}, num_img_patches: {num_img_patches}, total: {self.num_track_patches + num_img_patches}")
+        if not self.use_pc_encoder:
+            num_patches_h, num_patches_w = self.img_size[0] // self.patch_size, self.img_size[1] // self.patch_size
+            img_embed = get_2d_sincos_pos_embed(dim, (num_patches_h, num_patches_w))
+            img_embed = rearrange(img_embed, 'n d -> () n d')
+            self.img_embed.data.copy_(torch.from_numpy(img_embed))
 
     def _preprocess_track(self, track):
         return track
@@ -151,18 +176,30 @@ class TrackTransformer(nn.Module):
         track = rearrange(track, 'b t n d -> b (t n) d')
         return track
 
-    def _encode_video(self, vid, p, depth=None):
+    def _encode_video(self, vid, p, depth=None, intrinsic=None):
         """
         vid: (b, t, c, h, w)
         depth: (b, t, 1, h, w)
         """
-        vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
-        vid = rearrange(vid, "b t c h w -> b (t c) h w")
-        patches = self.img_proj_encoder(vid)  # b, n, d
-        patches = self._mask_patches(patches, p=p)
-        patches = patches + self.img_embed
+        if self.use_pc_encoder:
+            rgb_values = vid if self.use_colored_pc else None
+            
+            with torch.no_grad():
+                pointcloud = get_point_cloud_from_depth_torch(depth, intrinsic[0], rgb_values) # (b, t, (h w), c)
+                b, t, *_ = pointcloud.shape
+                pointcloud = rearrange(pointcloud, 'b t n c -> (b t) n c')
+                
+            encoded_pc = self.pc_encoder(pointcloud)  # (b, t, dim)
+            encoded_pc = rearrange(encoded_pc, '(b t) d -> b t d', b=b)
+            return encoded_pc
+        else:
+            vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
+            vid = rearrange(vid, "b t c h w -> b (t c) h w")
+            patches = self.img_proj_encoder(vid)  # b, n, d
+            patches = self._mask_patches(patches, p=p)
+            patches = patches + self.img_embed
 
-        return patches
+            return patches
 
     def _mask_patches(self, patches, p):
         """
@@ -182,7 +219,7 @@ class TrackTransformer(nn.Module):
         mask_track[:, 1:] = track[:, [0]]
         return mask_track
 
-    def forward(self, vid, track, task_emb, p_img, depth=None):
+    def forward(self, vid, track, task_emb, p_img, depth=None, intrinsic=None):
         """
         track: (b, tl, n, 2 or 3), which means current time step t0 -> t0 + tl
         vid: (b, t, c, h, w), which means the past time step t0 - t -> t0
@@ -190,24 +227,23 @@ class TrackTransformer(nn.Module):
         """
         assert torch.max(vid) <=1.
         B, T, _, _ = track.shape
-        patches = self._encode_video(vid, p_img, depth)  # (b, n_image, d)
+        patches = self._encode_video(vid, p_img, depth, intrinsic)  # (b, n_image, d)
         enc_track = self._encode_track(track)
 
         text_encoded = self.language_encoder(task_emb)  # (b, c)
         text_encoded = rearrange(text_encoded, 'b c -> b 1 c')
-
         x = torch.cat([enc_track, patches, text_encoded], dim=1)
         x = self.transformer(x)
 
         rec_track, rec_patches = x[:, :self.num_track_patches], x[:, self.num_track_patches:-1]
-        rec_patches = self.img_decoder(rec_patches)  # (b, n_image, 3 * t * patch_size ** 2)
         rec_track = self.track_decoder(rec_track)  # (b, (t n), (2 or 3) * patch_size)
         num_track_h = self.num_track_ts // self.track_patch_size
         rec_track = rearrange(rec_track, 'b (t n) (p c) -> b (t p) n c', p=self.track_patch_size, t=num_track_h)
-
+        
+        rec_patches = self.img_decoder(rec_patches)  if not self.use_pc_encoder else None
         return rec_track, rec_patches
 
-    def reconstruct(self, vid, track, task_emb, p_img, depth=None):
+    def reconstruct(self, vid, track, task_emb, p_img, depth=None, intrinsic=None):
         """
         wrapper of forward with preprocessing
         track: (b, tl, n, 2), which means current time step t0 -> t0 + tl
@@ -217,7 +253,7 @@ class TrackTransformer(nn.Module):
         assert len(vid.shape) == 5  # b, t, c, h, w
         track = self._preprocess_track(track)
         vid = self._preprocess_vid(vid)
-        return self.forward(vid, track, task_emb, p_img, depth)
+        return self.forward(vid, track, task_emb, p_img, depth, intrinsic)
 
     def forward_loss(self,
                      vid,
@@ -227,6 +263,7 @@ class TrackTransformer(nn.Module):
                      lbd_img,
                      p_img,
                      depth=None,
+                     intrinsic=None,
                      return_outs=False,
                      vis=None):
         """
@@ -243,19 +280,22 @@ class TrackTransformer(nn.Module):
         vid = self._preprocess_vid(vid)
         vis = self._preprocess_vis(vis)
 
-        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth)
+        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth, intrinsic)
         vis[vis == 0] = .1
         track_channels = 2 + int(self.use_points)
         vis = repeat(vis, "b tl n -> b tl n c", c=track_channels)
         track_loss = torch.mean((rec_track - track) ** 2 * vis)
         vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
-        img_loss = torch.mean((rec_patches - self._patchify(vid)) ** 2)
+        img_loss = torch.mean((rec_patches - self._patchify(vid)) ** 2) if not self.use_pc_encoder else torch.tensor(0)
         loss = lbd_track * track_loss + lbd_img * img_loss
+
+        track_distance = euclidean_distance(rec_track, track)
 
         ret_dict = {
             "loss": loss.item(),
             "track_loss": track_loss.item(),
             "img_loss": img_loss.item(),
+            "track_distance": track_distance.item(),
         }
 
         if return_outs:
@@ -275,16 +315,16 @@ class TrackTransformer(nn.Module):
         track = self._preprocess_track(track)
         vid = self._preprocess_vid(vid)
 
-        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth)
+        rec_track, rec_patches = self.forward(vid, track, task_emb, p_img, depth, intrinsic)
         track_loss = F.mse_loss(rec_track, track)
         in_vid = torch.concat([vid, depth], dim=2) if self.depth_dim else vid
-        img_loss = F.mse_loss(rec_patches, self._patchify(in_vid))
+        img_loss = F.mse_loss(rec_patches, self._patchify(in_vid)) if not self.use_pc_encoder else torch.tensor(0)
         loss = track_loss + img_loss
-
-        rec_image = self._unpatchify(rec_patches)
-
+        rec_image = self._unpatchify(rec_patches) if not self.use_pc_encoder else rec_patches
         # place them side by side
-        combined_image = torch.cat([vid[:, -1], rec_image[:, -1]], dim=-1)  # only visualize the current frame
+
+        images = [vid[:, -1], rec_image[:, -1]] if not self.use_pc_encoder else [vid[:, -1], vid[:, -1]]
+        combined_image = torch.cat(images, dim=-1)  # only visualize the current frame
         combined_image = self.img_unnormalizer(combined_image) * 255
         combined_image = torch.clamp(combined_image, 0, 255)
         combined_image = rearrange(combined_image, '1 c h w -> h w c')
@@ -293,6 +333,7 @@ class TrackTransformer(nn.Module):
         rec_track = rec_track.clone()
         if self.use_points and vis_points:
             vis = Visualizer()
+            
             track_colored_points = get_colored_point_cloud_with_tracks(*to_cpu(_vid, depth, track, intrinsic.squeeze()))
             track_traj = torch.from_numpy(vis.get_pointcloud(track_colored_points))
             track_traj = rearrange(track_traj, 'h w c -> 1 1 c h w')

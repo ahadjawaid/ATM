@@ -91,10 +91,10 @@ def create_cached_augmented_dataset(*args, dataset_name: str = 'atm', **kwargs):
         len_vids_shape, len_depth_shape, len_tracks_shape = len(vids.shape), len(depth.shape), len(tracks.shape)
         
         if len_vids_shape == 4:
-            vids = vids[None]
+            vids = vids[None, None]
 
         if len_depth_shape == 4:
-            depth = depth[None]
+            depth = depth[None, None]
         
         if len_tracks_shape == 3:
             tracks = tracks[None, None]

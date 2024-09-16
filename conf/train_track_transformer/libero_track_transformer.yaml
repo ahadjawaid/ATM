@@ -20,7 +20,7 @@ train_gpus: [0, 1]
 
 # Training
 lr: 1e-4
-batch_size: 512
+batch_size: 384
 mix_precision: true
 num_workers: 7
 val_freq: 5
@@ -30,8 +30,10 @@ epochs: 251
 seed: 0
 dry: false
 use_points: true
-depth_dim: true
-aug_prob: 0.7553983553695175
+depth_dim: false
+use_pc_encoder: true
+use_colored_pc: true
+aug_prob: 0.
 
 model_name: TrackTransformer
 p_img: 0.5
@@ -89,6 +91,7 @@ model_cfg:
     num_layers: 1
   use_points: ${use_points}
   depth_dim: ${depth_dim}
+  use_pc_encoder: ${use_pc_encoder}
 
 dataset_cfg:
   img_size: ${img_size}
@@ -97,4 +100,5 @@ dataset_cfg:
   num_track_ids: ${num_track_ids}
   cache_all: true
   cache_image: false
+  mixed_precision: true
   use_points: ${use_points}

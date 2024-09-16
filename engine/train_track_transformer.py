@@ -25,11 +25,11 @@ def main(cfg: DictConfig):
     fabric.launch()
 
     None if (cfg.dry or not fabric.is_global_zero) else init_wandb(cfg)
-
-    train_dataset = CachedAugmentedDataset(dataset='atm', dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
+        
+    train_dataset = ATMPretrainDataset(dataset_dir=cfg.train_dataset, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
     train_loader = get_dataloader(train_dataset, mode="train", num_workers=cfg.num_workers, batch_size=cfg.batch_size)
 
-    train_vis_dataset = CachedAugmentedDataset(dataset='atm', dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
+    train_vis_dataset = ATMPretrainDataset(dataset_dir=cfg.train_dataset, vis=True, **cfg.dataset_cfg, aug_prob=cfg.aug_prob)
     train_vis_dataloader = get_dataloader(train_vis_dataset, mode="train", num_workers=1, batch_size=1)
 
     val_dataset = ATMPretrainDataset(dataset_dir=cfg.val_dataset, **cfg.dataset_cfg, aug_prob=0.)
@@ -133,13 +133,14 @@ def run_one_epoch(fabric,
     """
     Optimize the policy. Return a dictionary of the loss and any other metrics.
     """
-    track_loss, vid_loss, tot_loss, tot_items = 0, 0, 0, 0
+    track_loss, vid_loss, tot_loss, tot_track_dist, tot_items = 0, 0, 0, 0, 0
 
     model.train()
     i = 0
     for vid, track, vis, task_emb, intrinsic, depth in tqdm(dataloader):
+        vid, track, vis, task_emb, depth = map(lambda x: x.cuda(), (vid, track, vis, task_emb, depth))
         if mix_precision:
-            vid, track, vis, task_emb, depth = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16(), depth.bfloat16()
+            vid, track, vis, task_emb, depth = map(lambda x: x.bfloat16(), (vid, track, vis, task_emb, depth))
         b, t, c, h, w = vid.shape
         b, tl, n, _ = track.shape
         b, tl, n = vis.shape
@@ -148,6 +149,7 @@ def run_one_epoch(fabric,
             track,
             task_emb,
             depth=depth,
+            intrinsic=intrinsic,
             lbd_track=lbd_track,
             lbd_img=lbd_img,
             p_img=p_img)  # do not use vis
@@ -161,6 +163,7 @@ def run_one_epoch(fabric,
         track_loss += ret_dict["track_loss"]
         vid_loss += ret_dict["img_loss"]
         tot_loss += ret_dict["loss"]
+        tot_track_dist += ret_dict["track_distance"]
         tot_items += b
 
         i += 1
@@ -169,6 +172,7 @@ def run_one_epoch(fabric,
         "train/track_loss": track_loss / tot_items,
         "train/vid_loss": vid_loss / tot_items,
         "train/loss": tot_loss / tot_items,
+        "train/track_dist": tot_track_dist / tot_items,
     }
 
     if scheduler is not None:
@@ -178,14 +182,14 @@ def run_one_epoch(fabric,
 
 @torch.no_grad()
 def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, tag="val"):
-    track_loss, vid_loss, tot_loss, tot_items = 0, 0, 0, 0
+    track_loss, vid_loss, tot_loss, tot_track_dist, tot_items = 0, 0, 0, 0, 0
     model.eval()
 
     i = 0
     for vid, track, vis, task_emb, intrinsic, depth in tqdm(dataloader):
-        vid, track, vis, task_emb, depth = vid.cuda(), track.cuda(), vis.cuda(), task_emb.cuda(), depth.cuda()
+        vid, track, vis, task_emb, depth, intrinsic = map(lambda x: x.cuda(), (vid, track, vis, task_emb, depth, intrinsic))
         if mix_precision:
-            vid, track, vis, task_emb, depth = vid.bfloat16(), track.bfloat16(), vis.bfloat16(), task_emb.bfloat16(), depth.bfloat16()
+            vid, track, vis, task_emb, depth, intrinsic = map(lambda x: x.bfloat16(), (vid, track, vis, task_emb, depth, intrinsic))
         b, t, c, h, w = vid.shape
         b, tl, n, _ = track.shape
 
@@ -194,6 +198,7 @@ def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, 
             track,
             task_emb,
             depth=depth,
+            intrinsic=intrinsic,
             lbd_track=lbd_track,
             lbd_img=lbd_img,
             p_img=p_img,
@@ -202,6 +207,7 @@ def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, 
         track_loss += ret_dict["track_loss"]
         vid_loss += ret_dict["img_loss"]
         tot_loss += ret_dict["loss"]
+        tot_track_dist += ret_dict["track_distance"]
         tot_items += b
 
         i += 1
@@ -210,6 +216,7 @@ def evaluate(model, dataloader, lbd_track, lbd_img, p_img, mix_precision=False, 
         f"{tag}/track_loss": track_loss / tot_items,
         f"{tag}/vid_loss": vid_loss / tot_items,
         f"{tag}/loss": tot_loss / tot_items,
+        f"{tag}/track_dist": tot_track_dist / tot_items,
     }
 
     return out_dict
@@ -222,7 +229,7 @@ def visualize(model, dataloader, mix_precision=False):
     for i, (vid, track, vis, task_emb, intrinsic, depth) in enumerate(dataloader):
         vid, track, task_emb, intrinsic, depth = map(lambda x: x.cuda(), (vid, track, task_emb, intrinsic, depth))
         if mix_precision:
-            vid, track, task_emb, depth = map(lambda x: x.bfloat16(), (vid, track, task_emb, depth))
+            vid, track, task_emb, depth, intrinsic = map(lambda x: x.bfloat16(), (vid, track, task_emb, depth, intrinsic))
         _, eval_dict = model.forward_vis(vid, track, task_emb, p_img=0, depth=depth, intrinsic=intrinsic)
         if keep_eval_dict is None or torch.rand(1) < 0.1:
             keep_eval_dict = eval_dict

@@ -26,7 +26,7 @@ if suite_name == "libero_100":
     train_dataset_list = glob(os.path.join(root_dir, "libero_90/*/train/")) + glob(os.path.join(root_dir, "libero_10/*/train/"))
     val1_dataset_list = glob(os.path.join(root_dir, "libero_90/*/val/")) + glob(os.path.join(root_dir, "libero_10/*/val/"))
 else:
-    EPOCH = 251
+    EPOCH = 1001
     train_dataset_list = glob(os.path.join(root_dir, f"{suite_name}/*/train/"))
     val1_dataset_list = glob(os.path.join(root_dir, f"{suite_name}/*/val/"))
 

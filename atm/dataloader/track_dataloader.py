@@ -28,8 +28,11 @@ class ATMPretrainDataset(BaseDataset):
                 self.views.remove("task_emb_bert")
                 self.views.remove("extra_states")
                 self.views.sort()
-
-            demo_len = demo["root"][self.views[0]]["video"][0].shape[0]
+            try:
+                demo_len = demo["root"][self.views[0]]["video"][0].shape[0]
+            except Exception as e:
+                print('demo_path:', fn, 'views:', self.views, 'demo["root"].keys()', demo["root"].keys(), 'demo.keys()', demo.keys())
+                raise e
 
             if self.cache_all:
                 demo = self.process_demo(demo)

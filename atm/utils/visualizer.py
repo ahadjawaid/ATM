@@ -239,6 +239,7 @@ def get_colored_point_cloud_with_tracks(rgb_img: torch.Tensor, depth: torch.Tens
     depth = depth.to(torch.float32).numpy()
     rgb_img = rgb_img.squeeze().to(torch.uint8).numpy()
     tracks = tracks.squeeze().to(torch.float32).numpy()
+    intrinsic = intrinsic.squeeze().to(torch.float32).numpy()
 
     depth = rearrange(depth, '... c h w -> (... h) w c')
     depth_img = get_depth_image(np.ascontiguousarray(depth))

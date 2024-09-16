@@ -9,6 +9,6 @@ parser.add_argument("--dataset", default="bc", choices=["bc", "atm"], help="The 
 args = parser.parse_args()
 dataset_name = args.dataset
 
-cfg = safe_load(open(f'{dataset_name}_dataset_args.yaml'))
+cfg = safe_load(open(f'{dataset_name}_libero_100_config.yaml'))
 
 create_cached_augmented_dataset(dataset_name=dataset_name, **cfg)
